@@ -1,6 +1,6 @@
 # Stride — Backend
 
-Go backend for the Stride wellness app. Runs on GCP Cloud Run.
+Golang backend for the Stride wellness app. Runs on GCP Cloud Run.
 
 ## Tech stack
 - **Language:** Go 1.22
