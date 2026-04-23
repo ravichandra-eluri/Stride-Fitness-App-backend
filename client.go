@@ -12,7 +12,7 @@ import (
 
 const (
 	anthropicAPI   = "https://api.anthropic.com/v1/messages"
-	anthropicModel = "claude-opus-4-6"
+	anthropicModel = "claude-sonnet-4-6"
 	apiVersion     = "2023-06-01"
 )
 
