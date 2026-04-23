@@ -1,0 +1,25 @@
+# Binaries
+server
+*.exe
+
+# Environment files
+.env
+.env.*
+*.env
+
+# Secrets
+*.p8
+*.pem
+*.key
+service-account*.json
+credentials*.json
+
+# Go
+vendor/
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
