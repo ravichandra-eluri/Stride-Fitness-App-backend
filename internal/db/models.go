@@ -14,26 +14,26 @@ type User struct {
 }
 
 type Profile struct {
-	ID              string
-	UserID          string
-	Name            string
-	Age             int
-	Gender          string
-	HeightCm        int
-	CurrentWeightKg float64
-	GoalWeightKg    float64
-	TimelineMonths  int
-	ActivityLevel   string
-	DailyMinutes    int
-	DietPrefs       []string
-	PrimaryGoal     string
-	CalorieTarget   int
-	ProteinTargetG  int
-	CarbsTargetG    int
-	FatTargetG      int
-	GoalDate        string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID              string    `json:"id"`
+	UserID          string    `json:"user_id"`
+	Name            string    `json:"name"`
+	Age             int       `json:"age"`
+	Gender          string    `json:"gender"`
+	HeightCm        int       `json:"height_cm"`
+	CurrentWeightKg float64   `json:"current_weight_kg"`
+	GoalWeightKg    float64   `json:"goal_weight_kg"`
+	TimelineMonths  int       `json:"timeline_months"`
+	ActivityLevel   string    `json:"activity_level"`
+	DailyMinutes    int       `json:"daily_minutes"`
+	DietPrefs       []string  `json:"diet_prefs"`
+	PrimaryGoal     string    `json:"primary_goal"`
+	CalorieTarget   int       `json:"calorie_target"`
+	ProteinTargetG  int       `json:"protein_target_g"`
+	CarbsTargetG    int       `json:"carbs_target_g"`
+	FatTargetG      int       `json:"fat_target_g"`
+	GoalDate        string    `json:"goal_date"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type MealPlan struct {

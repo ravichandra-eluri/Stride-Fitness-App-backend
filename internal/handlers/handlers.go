@@ -255,7 +255,12 @@ func GetProfile(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())
 		p, err := d.DB.GetProfile(r.Context(), userID)
-		if err != nil || p == nil {
+		if err != nil {
+			log.Printf("[profile] GetProfile userID=%s: %v", userID, err)
+			respondErr(w, 500, "db error")
+			return
+		}
+		if p == nil {
 			respondErr(w, 404, "profile not found")
 			return
 		}
