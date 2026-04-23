@@ -24,9 +24,9 @@ func main() {
 	databaseURL := mustEnv("DATABASE_URL")   // postgres://user:pass@host/dbname
 	claudeKey   := mustEnv("CLAUDE_API_KEY")
 	jwtSecret   := mustEnv("JWT_SECRET")
-	apnsKeyID   := mustEnv("APNS_KEY_ID")
-	apnsTeamID  := mustEnv("APNS_TEAM_ID")
-	apnsKeyPath := mustEnv("APNS_KEY_PATH")  // path to .p8 file
+	apnsKeyID   := getEnv("APNS_KEY_ID", "")
+	apnsTeamID  := getEnv("APNS_TEAM_ID", "")
+	apnsKeyPath := getEnv("APNS_KEY_PATH", "")
 
 	// ── Database ──────────────────────────────────────────────────────────
 	database, err := db.New(databaseURL)
