@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
+	"math"
 	"net/http"
 	"time"
 
@@ -203,6 +205,7 @@ func OnboardingComplete(d Deps) http.HandlerFunc {
 		// Call Claude — generate plan
 		plan, err := d.aiClient().GenerateOnboardingPlan(r.Context(), profile)
 		if err != nil {
+			log.Printf("[onboarding] GenerateOnboardingPlan: %v", err)
 			respondErr(w, 502, "ai error")
 			return
 		}
@@ -222,9 +225,9 @@ func OnboardingComplete(d Deps) http.HandlerFunc {
 			DietPrefs:       body.DietPrefs,
 			PrimaryGoal:     body.PrimaryGoal,
 			CalorieTarget:   plan.CalorieTarget,
-			ProteinTargetG:  plan.ProteinTargetG,
-			CarbsTargetG:    plan.CarbsTargetG,
-			FatTargetG:      plan.FatTargetG,
+			ProteinTargetG:  int(math.Round(plan.ProteinTargetG)),
+			CarbsTargetG:    int(math.Round(plan.CarbsTargetG)),
+			FatTargetG:      int(math.Round(plan.FatTargetG)),
 			GoalDate:        plan.GoalDate,
 		}
 		if err := d.DB.UpsertProfile(r.Context(), dbProfile); err != nil {
@@ -311,6 +314,7 @@ func RegenerateMealPlan(d Deps) http.HandlerFunc {
 
 		plan, err := d.aiClient().GenerateWeeklyMealPlan(r.Context(), aiProfile, weekLabel)
 		if err != nil {
+			log.Printf("[mealplan] GenerateWeeklyMealPlan: %v", err)
 			respondErr(w, 502, "ai error")
 			return
 		}
@@ -349,6 +353,7 @@ func SwapMeal(d Deps) http.HandlerFunc {
 		p, _ := d.DB.GetProfile(r.Context(), userID)
 		swaps, err := d.aiClient().SwapMeal(r.Context(), dbProfileToAI(p), body.Meal, body.Filter)
 		if err != nil {
+			log.Printf("[mealswap] SwapMeal: %v", err)
 			respondErr(w, 502, "ai error")
 			return
 		}

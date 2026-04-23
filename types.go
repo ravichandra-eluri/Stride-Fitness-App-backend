@@ -49,9 +49,9 @@ type Day struct {
 // OnboardingPlan is the result of GenerateOnboardingPlan.
 type OnboardingPlan struct {
 	CalorieTarget  int     `json:"calorie_target"`
-	ProteinTargetG int     `json:"protein_target_g"`
-	CarbsTargetG   int     `json:"carbs_target_g"`
-	FatTargetG     int     `json:"fat_target_g"`
+	ProteinTargetG float64 `json:"protein_target_g"`
+	CarbsTargetG   float64 `json:"carbs_target_g"`
+	FatTargetG     float64 `json:"fat_target_g"`
 	WeeklyLossKg   float64 `json:"weekly_loss_kg"`
 	GoalDate       string  `json:"goal_date"` // YYYY-MM-DD
 	CoachMessage   string  `json:"coach_message"`
