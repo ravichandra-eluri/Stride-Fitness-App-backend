@@ -1,14 +1,20 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
-	"log"
 	"math"
 	"net/http"
 	"time"
 
+	"stride/backend/internal/auth"
 	"stride/backend/internal/db"
+	apperrors "stride/backend/internal/errors"
+	"stride/backend/internal/logger"
+	"stride/backend/internal/metrics"
 	"stride/backend/internal/middleware"
+	"stride/backend/internal/validator"
+
 	ai "stride/backend"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -16,15 +22,17 @@ import (
 
 // Deps holds all handler dependencies (injected from main).
 type Deps struct {
-	DB          *db.DB
-	ClaudeKey   string
-	JWTSecret   []byte
-	APNsKeyID   string
-	APNsTeamID  string
-	APNsKeyPath string
+	DB            *db.DB
+	AIClient      *ai.Client
+	AppleVerifier *auth.AppleAuthVerifier
+	JWTSecret     []byte
+	JWTAccessTTL  time.Duration
+	JWTRefreshTTL time.Duration
+	Log           *logger.Logger
+	Metrics       *metrics.Metrics
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Response helpers ─────────────────────────────────────────────────────────
 
 func respond(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -32,22 +40,18 @@ func respond(w http.ResponseWriter, code int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func respondErr(w http.ResponseWriter, code int, msg string) {
-	respond(w, code, map[string]string{"error": msg})
-}
-
 func decode(r *http.Request, v any) error {
-	return json.NewDecoder(r.Body).Decode(v)
-}
-
-func (d Deps) aiClient() *ai.Client {
-	return ai.NewClient(d.ClaudeKey)
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		return apperrors.NewBadRequestError("Invalid JSON body")
+	}
+	return nil
 }
 
 func (d Deps) issueTokens(userID string) (access, refresh string, err error) {
 	access, err = jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub": userID,
-		"exp": time.Now().Add(24 * time.Hour).Unix(),
+		"exp": time.Now().Add(d.JWTAccessTTL).Unix(),
+		"iat": time.Now().Unix(),
 		"typ": "access",
 	}).SignedString(d.JWTSecret)
 	if err != nil {
@@ -55,7 +59,8 @@ func (d Deps) issueTokens(userID string) (access, refresh string, err error) {
 	}
 	refresh, err = jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub": userID,
-		"exp": time.Now().Add(30 * 24 * time.Hour).Unix(),
+		"exp": time.Now().Add(d.JWTRefreshTTL).Unix(),
+		"iat": time.Now().Unix(),
 		"typ": "refresh",
 	}).SignedString(d.JWTSecret)
 	return
@@ -69,55 +74,61 @@ func Health(w http.ResponseWriter, r *http.Request) {
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
-// POST /api/auth/apple
-// iOS sends the Apple identity token after Sign in with Apple.
-// We verify it, create or fetch the user, and return our own JWT.
+// POST /api/v1/auth/apple
 func AppleSignIn(d Deps) http.HandlerFunc {
+	v := validator.Get()
+
 	return func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			IdentityToken string `json:"identity_token"` // from Apple SDK
-			Email         string `json:"email"`           // only on first sign-in
-			FullName      string `json:"full_name"`
-		}
+		var body validator.AppleSignInRequest
 		if err := decode(r, &body); err != nil {
-			respondErr(w, 400, "invalid body")
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
 
-		// Verify Apple identity token and extract the Apple user ID (sub claim).
-		// In production: validate JWT signature against Apple's public keys
-		// at https://appleid.apple.com/auth/keys
-		// For brevity here we parse without full Apple verification.
-		token, _, err := jwt.NewParser().ParseUnverified(body.IdentityToken, jwt.MapClaims{})
-		if err != nil {
-			respondErr(w, 401, "invalid apple token")
+		if err := v.Struct(body); err != nil {
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
-		claims, _ := token.Claims.(jwt.MapClaims)
-		appleUserID, _ := claims["sub"].(string)
-		if appleUserID == "" {
-			respondErr(w, 401, "missing sub in apple token")
+
+		// Verify Apple identity token
+		claims, err := d.AppleVerifier.VerifyIdentityToken(r.Context(), body.IdentityToken)
+		if err != nil {
+			apperrors.WriteErrorFromErr(w, err)
 			return
+		}
+
+		appleUserID := claims.Subject
+		email := body.Email
+		if email == "" && claims.Email != "" {
+			email = claims.Email
 		}
 
 		// Get or create user
 		user, err := d.DB.GetUserByAppleID(r.Context(), appleUserID)
 		if err != nil {
-			respondErr(w, 500, "db error")
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
+
 		isNew := user == nil
 		if isNew {
-			user, err = d.DB.CreateUser(r.Context(), body.Email, appleUserID)
+			user, err = d.DB.CreateUser(r.Context(), email, appleUserID)
 			if err != nil {
-				respondErr(w, 500, "create user failed")
+				apperrors.WriteErrorFromErr(w, err)
 				return
 			}
+			d.Log.Info("new user created",
+				"user_id", user.ID,
+				"email", email,
+			)
 		}
+
+		// Touch user activity
+		d.DB.TouchUser(r.Context(), user.ID)
 
 		access, refresh, err := d.issueTokens(user.ID)
 		if err != nil {
-			respondErr(w, 500, "token error")
+			apperrors.WriteError(w, apperrors.NewInternalError(err))
 			return
 		}
 
@@ -130,32 +141,60 @@ func AppleSignIn(d Deps) http.HandlerFunc {
 	}
 }
 
-// POST /api/auth/refresh
+// POST /api/v1/auth/refresh
 func RefreshToken(d Deps) http.HandlerFunc {
+	v := validator.Get()
+
 	return func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			RefreshToken string `json:"refresh_token"`
+		var body validator.RefreshTokenRequest
+		if err := decode(r, &body); err != nil {
+			apperrors.WriteErrorFromErr(w, err)
+			return
 		}
-		decode(r, &body)
+
+		if err := v.Struct(body); err != nil {
+			apperrors.WriteErrorFromErr(w, err)
+			return
+		}
 
 		token, err := jwt.Parse(body.RefreshToken, func(t *jwt.Token) (interface{}, error) {
 			return d.JWTSecret, nil
 		})
 		if err != nil || !token.Valid {
-			respondErr(w, 401, "invalid refresh token")
+			apperrors.WriteError(w, apperrors.NewUnauthorizedError("Invalid refresh token"))
 			return
 		}
-		claims, _ := token.Claims.(jwt.MapClaims)
+
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			apperrors.WriteError(w, apperrors.NewUnauthorizedError("Invalid token claims"))
+			return
+		}
+
 		if claims["typ"] != "refresh" {
-			respondErr(w, 401, "not a refresh token")
+			apperrors.WriteError(w, apperrors.NewUnauthorizedError("Not a refresh token"))
 			return
 		}
+
 		userID, _ := claims["sub"].(string)
+		if userID == "" {
+			apperrors.WriteError(w, apperrors.NewUnauthorizedError("Missing user ID in token"))
+			return
+		}
+
+		// Verify user still exists
+		_, err = d.DB.GetUserByID(r.Context(), userID)
+		if err != nil {
+			apperrors.WriteErrorFromErr(w, err)
+			return
+		}
+
 		access, refresh, err := d.issueTokens(userID)
 		if err != nil {
-			respondErr(w, 500, "token error")
+			apperrors.WriteError(w, apperrors.NewInternalError(err))
 			return
 		}
+
 		respond(w, 200, map[string]string{
 			"access_token":  access,
 			"refresh_token": refresh,
@@ -165,27 +204,21 @@ func RefreshToken(d Deps) http.HandlerFunc {
 
 // ── Onboarding ────────────────────────────────────────────────────────────────
 
-// POST /api/onboarding/complete
-// Receives the full onboarding form, calls Claude, saves everything.
+// POST /api/v1/onboarding/complete
 func OnboardingComplete(d Deps) http.HandlerFunc {
+	v := validator.Get()
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())
 
-		var body struct {
-			Name           string   `json:"name"`
-			Age            int      `json:"age"`
-			Gender         string   `json:"gender"`
-			HeightCm       int      `json:"height_cm"`
-			CurrentWeight  float64  `json:"current_weight_kg"`
-			GoalWeight     float64  `json:"goal_weight_kg"`
-			TimelineMonths int      `json:"timeline_months"`
-			ActivityLevel  string   `json:"activity_level"`
-			DailyMinutes   int      `json:"daily_minutes"`
-			DietPrefs      []string `json:"diet_prefs"`
-			PrimaryGoal    string   `json:"primary_goal"`
-		}
+		var body validator.OnboardingRequest
 		if err := decode(r, &body); err != nil {
-			respondErr(w, 400, "invalid body")
+			apperrors.WriteErrorFromErr(w, err)
+			return
+		}
+
+		if err := v.Struct(body); err != nil {
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
 
@@ -203,10 +236,13 @@ func OnboardingComplete(d Deps) http.HandlerFunc {
 		}
 
 		// Call Claude — generate plan
-		plan, err := d.aiClient().GenerateOnboardingPlan(r.Context(), profile)
+		plan, err := d.AIClient.GenerateOnboardingPlan(r.Context(), profile)
 		if err != nil {
-			log.Printf("[onboarding] GenerateOnboardingPlan: %v", err)
-			respondErr(w, 502, "ai error")
+			d.Log.WithContext(r.Context()).Error("onboarding plan generation failed",
+				"user_id", userID,
+				"error", err.Error(),
+			)
+			apperrors.WriteError(w, apperrors.NewAIServiceError(err))
 			return
 		}
 
@@ -231,19 +267,24 @@ func OnboardingComplete(d Deps) http.HandlerFunc {
 			GoalDate:        plan.GoalDate,
 		}
 		if err := d.DB.UpsertProfile(r.Context(), dbProfile); err != nil {
-			respondErr(w, 500, "save profile failed")
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
 
+		d.Log.Info("onboarding completed",
+			"user_id", userID,
+			"calorie_target", plan.CalorieTarget,
+		)
+
 		respond(w, 200, map[string]any{
-			"calorie_target":  plan.CalorieTarget,
-			"protein_target":  plan.ProteinTargetG,
-			"carbs_target":    plan.CarbsTargetG,
-			"fat_target":      plan.FatTargetG,
-			"weekly_loss_kg":  plan.WeeklyLossKg,
-			"goal_date":       plan.GoalDate,
-			"coach_message":   plan.CoachMessage,
-			"plan_summary":    plan.PlanSummary,
+			"calorie_target": plan.CalorieTarget,
+			"protein_target": plan.ProteinTargetG,
+			"carbs_target":   plan.CarbsTargetG,
+			"fat_target":     plan.FatTargetG,
+			"weekly_loss_kg": plan.WeeklyLossKg,
+			"goal_date":      plan.GoalDate,
+			"coach_message":  plan.CoachMessage,
+			"plan_summary":   plan.PlanSummary,
 		})
 	}
 }
@@ -254,8 +295,12 @@ func GetProfile(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())
 		p, err := d.DB.GetProfile(r.Context(), userID)
-		if err != nil || p == nil {
-			respondErr(w, 404, "profile not found")
+		if err != nil {
+			apperrors.WriteErrorFromErr(w, err)
+			return
+		}
+		if p == nil {
+			apperrors.WriteError(w, apperrors.NewNotFoundError("profile"))
 			return
 		}
 		respond(w, 200, p)
@@ -266,14 +311,24 @@ func UpdateProfile(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())
 		p, err := d.DB.GetProfile(r.Context(), userID)
-		if err != nil || p == nil {
-			respondErr(w, 404, "profile not found")
+		if err != nil {
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
-		decode(r, p) // partial update — only override provided fields
+		if p == nil {
+			apperrors.WriteError(w, apperrors.NewNotFoundError("profile"))
+			return
+		}
+
+		// Partial update — decode into existing profile
+		if err := decode(r, p); err != nil {
+			apperrors.WriteErrorFromErr(w, err)
+			return
+		}
 		p.UserID = userID
+
 		if err := d.DB.UpsertProfile(r.Context(), p); err != nil {
-			respondErr(w, 500, "update failed")
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
 		respond(w, 200, p)
@@ -287,11 +342,11 @@ func GetMealPlan(d Deps) http.HandlerFunc {
 		userID := middleware.UserIDFromCtx(r.Context())
 		plan, err := d.DB.GetActiveMealPlan(r.Context(), userID)
 		if err != nil {
-			respondErr(w, 500, "db error")
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
 		if plan == nil {
-			respondErr(w, 404, "no meal plan found")
+			apperrors.WriteError(w, apperrors.NewNotFoundError("meal plan"))
 			return
 		}
 		// Return raw JSONB — already the right shape for iOS
@@ -304,18 +359,25 @@ func RegenerateMealPlan(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())
 		p, err := d.DB.GetProfile(r.Context(), userID)
-		if err != nil || p == nil {
-			respondErr(w, 404, "profile not found")
+		if err != nil {
+			apperrors.WriteErrorFromErr(w, err)
+			return
+		}
+		if p == nil {
+			apperrors.WriteError(w, apperrors.NewNotFoundError("profile"))
 			return
 		}
 
 		aiProfile := dbProfileToAI(p)
 		weekLabel := currentWeekLabel()
 
-		plan, err := d.aiClient().GenerateWeeklyMealPlan(r.Context(), aiProfile, weekLabel)
+		plan, err := d.AIClient.GenerateWeeklyMealPlan(r.Context(), aiProfile, weekLabel)
 		if err != nil {
-			log.Printf("[mealplan] GenerateWeeklyMealPlan: %v", err)
-			respondErr(w, 502, "ai error")
+			d.Log.WithContext(r.Context()).Error("meal plan generation failed",
+				"user_id", userID,
+				"error", err.Error(),
+			)
+			apperrors.WriteError(w, apperrors.NewAIServiceError(err))
 			return
 		}
 
@@ -328,33 +390,69 @@ func RegenerateMealPlan(d Deps) http.HandlerFunc {
 			AvgDailyCalories: plan.AvgDailyCalories,
 		}
 		if err := d.DB.SaveMealPlan(r.Context(), mealPlan); err != nil {
-			respondErr(w, 500, "save plan failed")
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
+
+		if d.Metrics != nil {
+			d.Metrics.MealPlansGenerated.Inc()
+		}
+
+		d.Log.Info("meal plan generated",
+			"user_id", userID,
+			"week", weekLabel,
+		)
+
 		respond(w, 200, plan)
 	}
 }
 
 func SwapMeal(d Deps) http.HandlerFunc {
+	v := validator.Get()
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())
 
-		var body struct {
-			MealPlanID string         `json:"meal_plan_id"`
-			Day        string         `json:"day"`
-			Meal       ai.Meal        `json:"meal"`
-			Filter     ai.SwapFilter  `json:"filter"`
-		}
+		var body validator.SwapMealRequest
 		if err := decode(r, &body); err != nil {
-			respondErr(w, 400, "invalid body")
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
 
-		p, _ := d.DB.GetProfile(r.Context(), userID)
-		swaps, err := d.aiClient().SwapMeal(r.Context(), dbProfileToAI(p), body.Meal, body.Filter)
+		if err := v.Struct(body); err != nil {
+			apperrors.WriteErrorFromErr(w, err)
+			return
+		}
+
+		p, err := d.DB.GetProfile(r.Context(), userID)
 		if err != nil {
-			log.Printf("[mealswap] SwapMeal: %v", err)
-			respondErr(w, 502, "ai error")
+			apperrors.WriteErrorFromErr(w, err)
+			return
+		}
+		if p == nil {
+			apperrors.WriteError(w, apperrors.NewNotFoundError("profile"))
+			return
+		}
+
+		// Convert DTO to AI types
+		meal := ai.Meal{
+			MealType:    body.Meal.MealType,
+			Name:        body.Meal.Name,
+			Description: body.Meal.Description,
+			Calories:    body.Meal.Calories,
+			ProteinG:    body.Meal.ProteinG,
+			CarbsG:      body.Meal.CarbsG,
+			FatG:        body.Meal.FatG,
+			Ingredients: body.Meal.Ingredients,
+		}
+
+		swaps, err := d.AIClient.SwapMeal(r.Context(), dbProfileToAI(p), meal, ai.SwapFilter(body.Filter))
+		if err != nil {
+			d.Log.WithContext(r.Context()).Error("meal swap failed",
+				"user_id", userID,
+				"error", err.Error(),
+			)
+			apperrors.WriteError(w, apperrors.NewAIServiceError(err))
 			return
 		}
 
@@ -366,7 +464,7 @@ func SwapMeal(d Deps) http.HandlerFunc {
 			Day:              body.Day,
 			MealType:         body.Meal.MealType,
 			OriginalMealJSON: origJSON,
-			FilterUsed:       string(body.Filter),
+			FilterUsed:       body.Filter,
 		})
 
 		respond(w, 200, swaps)
@@ -376,27 +474,49 @@ func SwapMeal(d Deps) http.HandlerFunc {
 // ── Food logging ──────────────────────────────────────────────────────────────
 
 func LogFood(d Deps) http.HandlerFunc {
+	v := validator.Get()
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())
 
-		var entry db.FoodEntry
-		if err := decode(r, &entry); err != nil {
-			respondErr(w, 400, "invalid body")
+		var body validator.FoodEntryRequest
+		if err := decode(r, &body); err != nil {
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
-		entry.UserID = userID
+
+		if err := v.Struct(body); err != nil {
+			apperrors.WriteErrorFromErr(w, err)
+			return
+		}
 
 		// Ensure today's daily_log exists
 		log, _ := d.DB.GetTodayLog(r.Context(), userID)
 		if log == nil {
 			log = &db.DailyLog{UserID: userID}
-			d.DB.UpsertDailyLog(r.Context(), log)
+			if err := d.DB.UpsertDailyLog(r.Context(), log); err != nil {
+				apperrors.WriteErrorFromErr(w, err)
+				return
+			}
 			log, _ = d.DB.GetTodayLog(r.Context(), userID)
 		}
-		entry.DailyLogID = log.ID
 
-		if err := d.DB.AddFoodEntry(r.Context(), &entry); err != nil {
-			respondErr(w, 500, "log failed")
+		entry := &db.FoodEntry{
+			UserID:      userID,
+			DailyLogID:  log.ID,
+			MealType:    body.MealType,
+			FoodName:    body.FoodName,
+			Calories:    body.Calories,
+			ProteinG:    body.ProteinG,
+			CarbsG:      body.CarbsG,
+			FatG:        body.FatG,
+			ServingSize: body.ServingSize,
+			LogMethod:   body.LogMethod,
+			Barcode:     body.Barcode,
+		}
+
+		if err := d.DB.AddFoodEntry(r.Context(), entry); err != nil {
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
 
@@ -415,6 +535,10 @@ func LogFood(d Deps) http.HandlerFunc {
 		log.CarbsG = totalC
 		log.FatG = totalF
 		d.DB.UpsertDailyLog(r.Context(), log)
+
+		if d.Metrics != nil {
+			d.Metrics.FoodEntriesLogged.Inc()
+		}
 
 		respond(w, 201, map[string]any{
 			"entry_id":       entry.ID,
@@ -439,15 +563,24 @@ func GetTodayLog(d Deps) http.HandlerFunc {
 }
 
 func LogWeight(d Deps) http.HandlerFunc {
+	v := validator.Get()
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())
-		var body struct {
-			WeightKg float64 `json:"weight_kg"`
-			Note     string  `json:"note"`
+
+		var body validator.LogWeightRequest
+		if err := decode(r, &body); err != nil {
+			apperrors.WriteErrorFromErr(w, err)
+			return
 		}
-		decode(r, &body)
+
+		if err := v.Struct(body); err != nil {
+			apperrors.WriteErrorFromErr(w, err)
+			return
+		}
+
 		if err := d.DB.LogWeight(r.Context(), userID, body.WeightKg, body.Note); err != nil {
-			respondErr(w, 500, "log weight failed")
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
 		respond(w, 201, map[string]string{"status": "logged"})
@@ -461,7 +594,7 @@ func WeeklyProgress(d Deps) http.HandlerFunc {
 		userID := middleware.UserIDFromCtx(r.Context())
 		summary, err := d.DB.GetWeeklySummary(r.Context(), userID)
 		if err != nil {
-			respondErr(w, 500, "db error")
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
 		respond(w, 200, summary)
@@ -473,7 +606,7 @@ func WeightHistory(d Deps) http.HandlerFunc {
 		userID := middleware.UserIDFromCtx(r.Context())
 		entries, err := d.DB.GetWeightHistory(r.Context(), userID, 90)
 		if err != nil {
-			respondErr(w, 500, "db error")
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
 		respond(w, 200, entries)
@@ -487,11 +620,11 @@ func TodayCoachMessage(d Deps) http.HandlerFunc {
 		userID := middleware.UserIDFromCtx(r.Context())
 		msg, err := d.DB.GetTodayCoachMessage(r.Context(), userID)
 		if err != nil {
-			respondErr(w, 500, "db error")
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
 		if msg == nil {
-			respondErr(w, 404, "no message today yet")
+			apperrors.WriteError(w, apperrors.NewNotFoundError("coach message"))
 			return
 		}
 		respond(w, 200, msg)
@@ -501,16 +634,25 @@ func TodayCoachMessage(d Deps) http.HandlerFunc {
 // ── Subscriptions ─────────────────────────────────────────────────────────────
 
 func VerifySubscription(d Deps) http.HandlerFunc {
+	v := validator.Get()
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())
-		var body struct {
-			TransactionID string `json:"transaction_id"`
-			Plan          string `json:"plan"` // monthly | annual
-		}
-		decode(r, &body)
 
-		// In production: verify transaction with Apple's App Store Server API
+		var body validator.VerifySubscriptionRequest
+		if err := decode(r, &body); err != nil {
+			apperrors.WriteErrorFromErr(w, err)
+			return
+		}
+
+		if err := v.Struct(body); err != nil {
+			apperrors.WriteErrorFromErr(w, err)
+			return
+		}
+
+		// TODO: In production, verify transaction with Apple's App Store Server API
 		// POST https://api.storekit.itunes.apple.com/inApps/v1/transactions/{transactionId}
+
 		sub := &db.Subscription{
 			UserID:            userID,
 			Plan:              body.Plan,
@@ -518,20 +660,27 @@ func VerifySubscription(d Deps) http.HandlerFunc {
 			AppleOriginalTxID: body.TransactionID,
 		}
 		if err := d.DB.UpsertSubscription(r.Context(), sub); err != nil {
-			respondErr(w, 500, "save subscription failed")
+			apperrors.WriteErrorFromErr(w, err)
 			return
 		}
+
+		d.Log.Info("subscription verified",
+			"user_id", userID,
+			"plan", body.Plan,
+		)
+
 		respond(w, 200, map[string]string{"status": "active"})
 	}
 }
 
 // POST /webhooks/apple/subscriptions
-// Apple sends renewal/cancellation events here (server-to-server notifications v2).
 func AppleSubscriptionWebhook(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// In production: verify the signed payload from Apple
-		// Decode the signedPayload JWT, extract notificationType and data
-		// Update subscription status accordingly
+		// TODO: In production:
+		// 1. Verify the signed payload from Apple
+		// 2. Decode the signedPayload JWT
+		// 3. Extract notificationType and data
+		// 4. Update subscription status accordingly
 		// notificationType: DID_RENEW | EXPIRED | REFUND | CANCEL | etc.
 		w.WriteHeader(http.StatusOK)
 	}
@@ -540,14 +689,26 @@ func AppleSubscriptionWebhook(d Deps) http.HandlerFunc {
 // ── Device tokens ─────────────────────────────────────────────────────────────
 
 func RegisterDevice(d Deps) http.HandlerFunc {
+	v := validator.Get()
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())
-		var body struct {
-			Token      string `json:"token"`
-			DeviceName string `json:"device_name"`
+
+		var body validator.RegisterDeviceRequest
+		if err := decode(r, &body); err != nil {
+			apperrors.WriteErrorFromErr(w, err)
+			return
 		}
-		decode(r, &body)
-		d.DB.UpsertDeviceToken(r.Context(), userID, body.Token, body.DeviceName)
+
+		if err := v.Struct(body); err != nil {
+			apperrors.WriteErrorFromErr(w, err)
+			return
+		}
+
+		if err := d.DB.UpsertDeviceToken(r.Context(), userID, body.Token, body.DeviceName); err != nil {
+			apperrors.WriteErrorFromErr(w, err)
+			return
+		}
 		respond(w, 200, map[string]string{"status": "registered"})
 	}
 }
@@ -580,4 +741,9 @@ func currentWeekLabel() string {
 func weekStart() time.Time {
 	now := time.Now()
 	return now.AddDate(0, 0, -int(now.Weekday()-time.Monday))
+}
+
+// WithContext is a helper that adds user ID to context for logging.
+func WithContext(ctx context.Context, userID string) context.Context {
+	return context.WithValue(ctx, middleware.UserIDKey, userID)
 }
