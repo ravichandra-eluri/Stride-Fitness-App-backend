@@ -31,7 +31,7 @@ gcloud run deploy $SERVICE \
   --max-instances 10 \
   --memory 512Mi \
   --cpu 1 \
-  --timeout 60 \
+  --timeout 180 \
   --add-cloudsql-instances "$PROJECT_ID:$REGION:stride-db" \
   --set-secrets="DATABASE_URL=database-url:latest,CLAUDE_API_KEY=claude-api-key:latest,JWT_SECRET=jwt-secret:latest"
 

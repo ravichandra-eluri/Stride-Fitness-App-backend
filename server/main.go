@@ -52,7 +52,9 @@ func main() {
 	r.Use(chimiddleware.RealIP)
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
-	r.Use(chimiddleware.Timeout(30 * time.Second))
+	// Default per-request timeout. Routes that call Claude (onboarding plan,
+	// meal plan) can easily run 30–90s; individual routes can override below.
+	r.Use(chimiddleware.Timeout(150 * time.Second))
 	r.Use(middleware.CORS)
 
 	// Public routes — no auth required

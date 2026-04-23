@@ -293,6 +293,7 @@ func GetMealPlan(d Deps) http.HandlerFunc {
 		userID := middleware.UserIDFromCtx(r.Context())
 		plan, err := d.DB.GetActiveMealPlan(r.Context(), userID)
 		if err != nil {
+			log.Printf("[mealplan] GetActiveMealPlan userID=%s: %v", userID, err)
 			respondErr(w, 500, "db error")
 			return
 		}
@@ -300,9 +301,20 @@ func GetMealPlan(d Deps) http.HandlerFunc {
 			respondErr(w, 404, "no meal plan found")
 			return
 		}
-		// Return raw JSONB — already the right shape for iOS
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(plan.DaysJSON)
+		// Wrap the stored Days JSONB in the envelope iOS expects.
+		days := json.RawMessage(plan.DaysJSON)
+		if len(days) == 0 {
+			days = json.RawMessage("[]")
+		}
+		respond(w, 200, struct {
+			Week             string          `json:"week"`
+			Days             json.RawMessage `json:"days"`
+			AvgDailyCalories int             `json:"avg_daily_calories"`
+		}{
+			Week:             plan.WeekLabel,
+			Days:             days,
+			AvgDailyCalories: plan.AvgDailyCalories,
+		})
 	}
 }
 

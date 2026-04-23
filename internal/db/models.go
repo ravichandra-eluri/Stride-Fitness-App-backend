@@ -37,13 +37,13 @@ type Profile struct {
 }
 
 type MealPlan struct {
-	ID               string
-	UserID           string
-	WeekLabel        string
-	WeekStartDate    time.Time
-	DaysJSON         []byte // JSONB — marshalled WeeklyMealPlanResponse.Days
-	AvgDailyCalories int
-	GeneratedAt      time.Time
+	ID               string    `json:"id"`
+	UserID           string    `json:"user_id"`
+	WeekLabel        string    `json:"week"`
+	WeekStartDate    time.Time `json:"week_start_date"`
+	DaysJSON         []byte    `json:"-"` // marshalled separately — see GetMealPlan handler
+	AvgDailyCalories int       `json:"avg_daily_calories"`
+	GeneratedAt      time.Time `json:"generated_at"`
 }
 
 type MealSwap struct {
@@ -58,63 +58,63 @@ type MealSwap struct {
 }
 
 type DailyLog struct {
-	ID            string
-	UserID        string
-	LogDate       time.Time
-	CaloriesEaten int
-	ProteinG      float64
-	CarbsG        float64
-	FatG          float64
-	WeightKg      sql.NullFloat64
-	OnPlan        bool
-	StreakDay     int
-	Notes         sql.NullString
+	ID            string          `json:"id"`
+	UserID        string          `json:"user_id"`
+	LogDate       time.Time       `json:"log_date"`
+	CaloriesEaten int             `json:"calories_eaten"`
+	ProteinG      float64         `json:"protein_g"`
+	CarbsG        float64         `json:"carbs_g"`
+	FatG          float64         `json:"fat_g"`
+	WeightKg      sql.NullFloat64 `json:"weight_kg,omitempty"`
+	OnPlan        bool            `json:"on_plan"`
+	StreakDay     int             `json:"streak_day"`
+	Notes         sql.NullString  `json:"notes,omitempty"`
 }
 
 type FoodEntry struct {
-	ID          string
-	UserID      string
-	DailyLogID  string
-	MealType    string
-	FoodName    string
-	Calories    int
-	ProteinG    float64
-	CarbsG      float64
-	FatG        float64
-	ServingSize string
-	LogMethod   string
-	Barcode     string
-	LoggedAt    time.Time
+	ID          string    `json:"id"`
+	UserID      string    `json:"user_id"`
+	DailyLogID  string    `json:"daily_log_id"`
+	MealType    string    `json:"meal_type"`
+	FoodName    string    `json:"food_name"`
+	Calories    int       `json:"calories"`
+	ProteinG    float64   `json:"protein_g"`
+	CarbsG      float64   `json:"carbs_g"`
+	FatG        float64   `json:"fat_g"`
+	ServingSize string    `json:"serving_size"`
+	LogMethod   string    `json:"log_method"`
+	Barcode     string    `json:"barcode,omitempty"`
+	LoggedAt    time.Time `json:"logged_at"`
 }
 
 type WeightEntry struct {
-	WeightKg float64
-	LoggedAt time.Time
+	WeightKg float64   `json:"weight_kg"`
+	LoggedAt time.Time `json:"logged_at"`
 }
 
 type CoachMessage struct {
-	ID           string
-	UserID       string
-	Message      string
-	Tip          string
-	PriorityMeal string
-	Tone         string
-	ReadAt       sql.NullTime
+	ID           string       `json:"id"`
+	UserID       string       `json:"user_id"`
+	Message      string       `json:"message"`
+	Tip          string       `json:"tip"`
+	PriorityMeal string       `json:"priority_meal,omitempty"`
+	Tone         string       `json:"tone"`
+	ReadAt       sql.NullTime `json:"read_at,omitempty"`
 }
 
 type YesterdayStats struct {
-	CaloriesEaten     int
-	CalorieTarget     int
-	CurrentStreakDays int
-	TotalLostKg       float64
+	CaloriesEaten     int     `json:"calories_eaten"`
+	CalorieTarget     int     `json:"calorie_target"`
+	CurrentStreakDays int     `json:"current_streak_days"`
+	TotalLostKg       float64 `json:"total_lost_kg"`
 }
 
 type WeeklySummary struct {
-	AvgCalories  int
-	AvgProteinG  float64
-	DaysOnPlan   int
-	DaysLogged   int
-	BestStreak   int
+	AvgCalories int     `json:"avg_calories"`
+	AvgProteinG float64 `json:"avg_protein_g"`
+	DaysOnPlan  int     `json:"days_on_plan"`
+	DaysLogged  int     `json:"days_logged"`
+	BestStreak  int     `json:"best_streak"`
 }
 
 type Subscription struct {
