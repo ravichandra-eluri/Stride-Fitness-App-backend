@@ -179,14 +179,24 @@ Include breakfast, lunch, dinner, and one snack per day.`,
 		weekLabel,
 	)
 
-	text, err := c.ask(ctx, prompt, 4096)
+	// 7 days × 4 meals with descriptions + ingredients easily exceeds 4096
+	// tokens. Claude Sonnet 4.6 supports up to 64k output tokens; give this
+	// call plenty of headroom so the JSON never ends mid-object.
+	text, err := c.ask(ctx, prompt, 16000)
 	if err != nil {
 		return nil, err
 	}
 
 	var plan WeeklyMealPlan
-	if err := json.Unmarshal([]byte(extractJSON(text)), &plan); err != nil {
-		return nil, fmt.Errorf("parse weekly meal plan: %w", err)
+	trimmed := extractJSON(text)
+	if err := json.Unmarshal([]byte(trimmed), &plan); err != nil {
+		// Log a short preview so future failures are debuggable without
+		// dumping the whole Claude response into the log stream.
+		preview := trimmed
+		if len(preview) > 400 {
+			preview = preview[:200] + "…" + preview[len(preview)-200:]
+		}
+		return nil, fmt.Errorf("parse weekly meal plan (len=%d): %w; preview=%q", len(trimmed), err, preview)
 	}
 	return &plan, nil
 }
