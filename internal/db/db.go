@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 // DB wraps sql.DB and exposes typed query methods.
@@ -79,7 +79,7 @@ func (db *DB) GetProfile(ctx context.Context, userID string) (*Profile, error) {
 	err := db.QueryRowContext(ctx, q, userID).Scan(
 		&p.ID, &p.UserID, &p.Name, &p.Age, &p.Gender, &p.HeightCm,
 		&p.CurrentWeightKg, &p.GoalWeightKg, &p.TimelineMonths,
-		&p.ActivityLevel, &p.DailyMinutes, &p.DietPrefs, &p.PrimaryGoal,
+		&p.ActivityLevel, &p.DailyMinutes, pq.Array(&p.DietPrefs), &p.PrimaryGoal,
 		&p.CalorieTarget, &p.ProteinTargetG, &p.CarbsTargetG, &p.FatTargetG,
 		&p.GoalDate, &p.CreatedAt, &p.UpdatedAt,
 	)
@@ -112,7 +112,7 @@ func (db *DB) UpsertProfile(ctx context.Context, p *Profile) error {
 	_, err := db.ExecContext(ctx, q,
 		p.UserID, p.Name, p.Age, p.Gender, p.HeightCm,
 		p.CurrentWeightKg, p.GoalWeightKg, p.TimelineMonths,
-		p.ActivityLevel, p.DailyMinutes, p.DietPrefs, p.PrimaryGoal,
+		p.ActivityLevel, p.DailyMinutes, pq.Array(p.DietPrefs), p.PrimaryGoal,
 		p.CalorieTarget, p.ProteinTargetG, p.CarbsTargetG, p.FatTargetG, p.GoalDate,
 	)
 	return err

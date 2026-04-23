@@ -231,6 +231,7 @@ func OnboardingComplete(d Deps) http.HandlerFunc {
 			GoalDate:        plan.GoalDate,
 		}
 		if err := d.DB.UpsertProfile(r.Context(), dbProfile); err != nil {
+			log.Printf("[onboarding] UpsertProfile userID=%s: %v", userID, err)
 			respondErr(w, 500, "save profile failed")
 			return
 		}
