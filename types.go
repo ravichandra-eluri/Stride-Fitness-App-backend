@@ -1,5 +1,15 @@
 package backend
 
+// FoodNutrition is returned by barcode lookup and photo analysis.
+type FoodNutrition struct {
+	Name        string  `json:"name"`
+	Calories    int     `json:"calories"`
+	ProteinG    float64 `json:"protein_g"`
+	CarbsG      float64 `json:"carbs_g"`
+	FatG        float64 `json:"fat_g"`
+	ServingSize string  `json:"serving_size"`
+}
+
 // UserProfile holds all user data needed for AI prompts.
 type UserProfile struct {
 	Name            string
