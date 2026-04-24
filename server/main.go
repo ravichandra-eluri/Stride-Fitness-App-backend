@@ -94,6 +94,10 @@ func main() {
 		// Coach
 		r.Get("/api/coach/today",       handlers.TodayCoachMessage(deps))
 
+		// Food lookup (barcode + photo AI)
+		r.Get("/api/food/barcode/{barcode}", handlers.FoodBarcodeLookup(deps))
+		r.Post("/api/food/analyze-photo",    handlers.FoodAnalyzePhoto(deps))
+
 		// Account management
 		r.Delete("/api/account",            handlers.DeleteAccount(deps))
 
