@@ -62,6 +62,7 @@ func main() {
 		r.Post("/api/auth/apple",    handlers.AppleSignIn(deps))
 		r.Post("/api/auth/refresh",  handlers.RefreshToken(deps))
 		r.Get("/health",             handlers.Health)
+		r.Get("/privacy",            handlers.PrivacyPolicy)
 	})
 
 	// Protected routes — JWT required
@@ -81,9 +82,10 @@ func main() {
 		r.Post("/api/meals/swap",        handlers.SwapMeal(deps))
 
 		// Food logging
-		r.Post("/api/log/food",         handlers.LogFood(deps))
-		r.Get("/api/log/today",         handlers.GetTodayLog(deps))
-		r.Post("/api/log/weight",       handlers.LogWeight(deps))
+		r.Post("/api/log/food",              handlers.LogFood(deps))
+		r.Get("/api/log/today",              handlers.GetTodayLog(deps))
+		r.Delete("/api/log/food/{id}",       handlers.DeleteFoodEntry(deps))
+		r.Post("/api/log/weight",            handlers.LogWeight(deps))
 
 		// Progress
 		r.Get("/api/progress/weekly",   handlers.WeeklyProgress(deps))
@@ -91,6 +93,9 @@ func main() {
 
 		// Coach
 		r.Get("/api/coach/today",       handlers.TodayCoachMessage(deps))
+
+		// Account management
+		r.Delete("/api/account",            handlers.DeleteAccount(deps))
 
 		// Subscriptions (StoreKit 2)
 		r.Post("/api/subscription/verify",  handlers.VerifySubscription(deps))

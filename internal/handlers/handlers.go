@@ -11,6 +11,7 @@ import (
 	"stride/backend/internal/middleware"
 	ai "stride/backend"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -66,6 +67,92 @@ func (d Deps) issueTokens(userID string) (access, refresh string, err error) {
 func Health(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, map[string]string{"status": "ok"})
 }
+
+// ── Privacy policy ────────────────────────────────────────────────────────────
+
+func PrivacyPolicy(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(privacyPolicyHTML))
+}
+
+const privacyPolicyHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stride Fitness — Privacy Policy</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         max-width: 720px; margin: 48px auto; padding: 0 24px;
+         color: #1a1a1a; line-height: 1.7; }
+  h1   { font-size: 2rem; margin-bottom: 4px; }
+  h2   { font-size: 1.15rem; margin-top: 36px; }
+  p, li { font-size: 0.97rem; color: #333; }
+  a    { color: #22c55e; }
+  .date { color: #888; font-size: 0.875rem; margin-bottom: 36px; }
+</style>
+</head>
+<body>
+<h1>Stride Fitness — Privacy Policy</h1>
+<p class="date">Last updated: April 23, 2026</p>
+
+<p>Stride Fitness ("we", "our", or "us") is committed to protecting your privacy.
+This policy explains what data we collect, why we collect it, and how you can
+control it.</p>
+
+<h2>1. Information We Collect</h2>
+<ul>
+  <li><strong>Account information</strong> — your Apple ID (anonymous user identifier
+      provided by Apple's Sign in with Apple system). We never receive your Apple ID
+      password.</li>
+  <li><strong>Profile data</strong> — name, age, gender, height, weight, fitness goals,
+      and dietary preferences that you enter during onboarding.</li>
+  <li><strong>Food logs</strong> — meals and calories you log manually within the app.</li>
+  <li><strong>Weight logs</strong> — weight entries you record over time.</li>
+  <li><strong>Usage data</strong> — streak counts and daily log summaries used to
+      generate your personalised coach messages.</li>
+</ul>
+
+<h2>2. How We Use Your Information</h2>
+<ul>
+  <li>To generate personalised meal plans and calorie targets via the Anthropic Claude AI API.</li>
+  <li>To show you your daily progress, streaks, and historical trends.</li>
+  <li>To deliver daily coach messages tailored to your recent activity.</li>
+  <li>We do <strong>not</strong> sell, rent, or share your personal data with third parties
+      for advertising or marketing purposes.</li>
+</ul>
+
+<h2>3. Third-Party Services</h2>
+<ul>
+  <li><strong>Anthropic Claude API</strong> — your profile and recent log data are sent
+      to Anthropic's API to generate meal plans and coach messages. Anthropic's privacy
+      policy is available at <a href="https://www.anthropic.com/privacy">anthropic.com/privacy</a>.</li>
+  <li><strong>Apple Sign in with Apple</strong> — authentication is handled entirely by
+      Apple. We only receive the anonymous user identifier Apple provides.</li>
+  <li><strong>Google Cloud Run / Cloud SQL</strong> — our backend and database run on
+      Google Cloud infrastructure in the United States.</li>
+</ul>
+
+<h2>4. Data Retention</h2>
+<p>We retain your data for as long as your account is active. You can permanently
+delete your account and all associated data at any time from the app's Profile screen
+(Profile → Delete account). Deletion is immediate and irreversible.</p>
+
+<h2>5. Children's Privacy</h2>
+<p>Stride Fitness is not directed at children under the age of 13. We do not knowingly
+collect personal information from children under 13.</p>
+
+<h2>6. Changes to This Policy</h2>
+<p>We may update this policy from time to time. We will notify you of material changes
+by updating the "Last updated" date above. Continued use of the app after changes
+constitutes acceptance of the revised policy.</p>
+
+<h2>7. Contact</h2>
+<p>If you have questions about this privacy policy, please contact us at
+<a href="mailto:chandra.sk59@gmail.com">chandra.sk59@gmail.com</a>.</p>
+</body>
+</html>`
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -552,6 +639,42 @@ func AppleSubscriptionWebhook(d Deps) http.HandlerFunc {
 		// Update subscription status accordingly
 		// notificationType: DID_RENEW | EXPIRED | REFUND | CANCEL | etc.
 		w.WriteHeader(http.StatusOK)
+	}
+}
+
+// ── Food entry deletion ───────────────────────────────────────────────────────
+
+// DELETE /api/log/food/{id}
+func DeleteFoodEntry(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := middleware.UserIDFromCtx(r.Context())
+		entryID := chi.URLParam(r, "id")
+		if entryID == "" {
+			respondErr(w, 400, "missing entry id")
+			return
+		}
+		if err := d.DB.DeleteFoodEntry(r.Context(), userID, entryID); err != nil {
+			log.Printf("[food] DeleteFoodEntry userID=%s entryID=%s: %v", userID, entryID, err)
+			respondErr(w, 500, "delete failed")
+			return
+		}
+		respond(w, 200, map[string]string{"status": "deleted"})
+	}
+}
+
+// ── Account deletion ──────────────────────────────────────────────────────────
+
+// DELETE /api/account
+// Required by Apple for apps using Sign in with Apple.
+func DeleteAccount(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := middleware.UserIDFromCtx(r.Context())
+		if err := d.DB.DeleteUser(r.Context(), userID); err != nil {
+			log.Printf("[account] DeleteUser userID=%s: %v", userID, err)
+			respondErr(w, 500, "delete account failed")
+			return
+		}
+		respond(w, 200, map[string]string{"status": "deleted"})
 	}
 }
 

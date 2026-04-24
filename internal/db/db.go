@@ -404,6 +404,33 @@ func (db *DB) GetDeviceTokens(ctx context.Context, userID string) ([]string, err
 	return tokens, rows.Err()
 }
 
+func (db *DB) DeleteFoodEntry(ctx context.Context, userID, entryID string) error {
+	_, err := db.ExecContext(ctx,
+		`DELETE FROM food_entries WHERE id = $1 AND user_id = $2`,
+		entryID, userID,
+	)
+	return err
+}
+
+// DeleteUser hard-deletes all data for a user (cascades to child tables that
+// have ON DELETE CASCADE, and explicitly removes the rest).
+func (db *DB) DeleteUser(ctx context.Context, userID string) error {
+	tables := []string{
+		"food_entries", "daily_logs", "weight_logs",
+		"coach_messages", "meal_swaps", "meal_plans",
+		"device_tokens", "subscriptions", "user_profiles",
+	}
+	for _, tbl := range tables {
+		if _, err := db.ExecContext(ctx,
+			`DELETE FROM `+tbl+` WHERE user_id = $1`, userID,
+		); err != nil {
+			return fmt.Errorf("delete %s: %w", tbl, err)
+		}
+	}
+	_, err := db.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, userID)
+	return err
+}
+
 func (db *DB) GetAllActiveUserIDs(ctx context.Context) ([]string, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT u.id FROM users u
