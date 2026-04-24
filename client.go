@@ -43,6 +43,30 @@ type message struct {
 	Content string `json:"content"`
 }
 
+// Vision (multimodal) types — used for photo food analysis.
+type visionRequest struct {
+	Model     string           `json:"model"`
+	MaxTokens int              `json:"max_tokens"`
+	Messages  []visionMessage  `json:"messages"`
+}
+
+type visionMessage struct {
+	Role    string               `json:"role"`
+	Content []visionContentBlock `json:"content"`
+}
+
+type visionContentBlock struct {
+	Type   string              `json:"type"`
+	Source *visionImageSource  `json:"source,omitempty"`
+	Text   string              `json:"text,omitempty"`
+}
+
+type visionImageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
 type claudeResponse struct {
 	Content []struct {
 		Text string `json:"text"`
@@ -99,6 +123,67 @@ func extractJSON(text string) string {
 	return text[start : end+1]
 }
 
+// ── AnalyzeFoodPhoto ──────────────────────────────────────────────────────────
+
+func (c *Client) AnalyzeFoodPhoto(ctx context.Context, imageBase64 string) (*FoodNutrition, error) {
+	body, _ := json.Marshal(visionRequest{
+		Model:     anthropicModel,
+		MaxTokens: 256,
+		Messages: []visionMessage{{
+			Role: "user",
+			Content: []visionContentBlock{
+				{
+					Type: "image",
+					Source: &visionImageSource{
+						Type:      "base64",
+						MediaType: "image/jpeg",
+						Data:      imageBase64,
+					},
+				},
+				{
+					Type: "text",
+					Text: `Estimate the nutritional content of this food. Respond with ONLY valid JSON (no markdown):
+{"name":"<food name>","calories":<integer>,"protein_g":<float>,"carbs_g":<float>,"fat_g":<float>,"serving_size":"<e.g. 1 plate or 200g>"}`,
+				},
+			},
+		}},
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicAPI, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.apiKey)
+	req.Header.Set("anthropic-version", apiVersion)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errBody map[string]any
+		json.NewDecoder(resp.Body).Decode(&errBody)
+		return nil, fmt.Errorf("claude api error %d: %v", resp.StatusCode, errBody)
+	}
+
+	var result claudeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	if len(result.Content) == 0 {
+		return nil, fmt.Errorf("empty response from claude")
+	}
+
+	var nutrition FoodNutrition
+	if err := json.Unmarshal([]byte(extractJSON(result.Content[0].Text)), &nutrition); err != nil {
+		return nil, fmt.Errorf("parse food nutrition: %w", err)
+	}
+	return &nutrition, nil
+}
+
 // ── GenerateOnboardingPlan ────────────────────────────────────────────────────
 
 func (c *Client) GenerateOnboardingPlan(ctx context.Context, p UserProfile) (*OnboardingPlan, error) {
@@ -141,36 +226,17 @@ Respond with ONLY valid JSON matching this structure (no markdown, no explanatio
 // ── GenerateWeeklyMealPlan ────────────────────────────────────────────────────
 
 func (c *Client) GenerateWeeklyMealPlan(ctx context.Context, p UserProfile, weekLabel string) (*WeeklyMealPlan, error) {
-	prompt := fmt.Sprintf(`You are a nutrition expert. Create a 7-day meal plan for week: %s.
+	prompt := fmt.Sprintf(`Nutrition expert. 7-day meal plan, week: %s.
+User: %s, %d y/o %s, %d kcal/day target, diet: %s, goal: %s→%s kg.
 
-User: %s, %d years old, %s
-Calorie target: %d kcal/day, Diet preferences: %s
-Goals: %s → %s kg
+Respond with ONLY valid JSON (no markdown, no explanation):
+{"week":"%s","avg_daily_calories":<int>,"days":[{"day":"Monday","total_calories":<int>,"meals":[{"meal_type":"breakfast","name":"<name>","calories":<int>,"protein_g":<float>,"carbs_g":<float>,"fat_g":<float>}]}]}
 
-Respond with ONLY valid JSON (no markdown):
-{
-  "week": "%s",
-  "avg_daily_calories": <integer>,
-  "days": [
-    {
-      "day": "Monday",
-      "total_calories": <integer>,
-      "meals": [
-        {
-          "meal_type": "breakfast",
-          "name": "<name>",
-          "description": "<brief description>",
-          "calories": <integer>,
-          "protein_g": <float>,
-          "carbs_g": <float>,
-          "fat_g": <float>,
-          "ingredients": ["<ingredient>"]
-        }
-      ]
-    }
-  ]
-}
-Include breakfast, lunch, dinner, and one snack per day.`,
+Rules:
+- 4 meals per day: breakfast, lunch, snack, dinner
+- No description field. No ingredients field.
+- Calories per day must be within 50 kcal of target.
+- Output all 7 days: Monday through Sunday.`,
 		weekLabel,
 		p.Name, p.Age, p.Gender,
 		p.CalorieTarget,
@@ -179,10 +245,9 @@ Include breakfast, lunch, dinner, and one snack per day.`,
 		weekLabel,
 	)
 
-	// 7 days × 4 meals with descriptions + ingredients easily exceeds 4096
-	// tokens. Claude Sonnet 4.6 supports up to 64k output tokens; give this
-	// call plenty of headroom so the JSON never ends mid-object.
-	text, err := c.ask(ctx, prompt, 16000)
+	// Stripped-down schema (no descriptions/ingredients) keeps response under
+	// ~3000 tokens, well within the 8000 limit and fast for Claude Sonnet.
+	text, err := c.ask(ctx, prompt, 8000)
 	if err != nil {
 		return nil, err
 	}
