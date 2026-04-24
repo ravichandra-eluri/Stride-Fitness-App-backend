@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"math"
 	"net/http"
@@ -325,9 +326,9 @@ func OnboardingComplete(d Deps) http.HandlerFunc {
 
 		respond(w, 200, map[string]any{
 			"calorie_target":  plan.CalorieTarget,
-			"protein_target":  plan.ProteinTargetG,
-			"carbs_target":    plan.CarbsTargetG,
-			"fat_target":      plan.FatTargetG,
+			"protein_target":  int(math.Round(plan.ProteinTargetG)),
+			"carbs_target":    int(math.Round(plan.CarbsTargetG)),
+			"fat_target":      int(math.Round(plan.FatTargetG)),
 			"weekly_loss_kg":  plan.WeeklyLossKg,
 			"goal_date":       plan.GoalDate,
 			"coach_message":   plan.CoachMessage,
@@ -590,16 +591,66 @@ func WeightHistory(d Deps) http.HandlerFunc {
 func TodayCoachMessage(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())
+
+		// Return cached message if one already exists for today.
 		msg, err := d.DB.GetTodayCoachMessage(r.Context(), userID)
 		if err != nil {
 			respondErr(w, 500, "db error")
 			return
 		}
-		if msg == nil {
-			respondErr(w, 404, "no message today yet")
+		if msg != nil {
+			respond(w, 200, msg)
 			return
 		}
-		respond(w, 200, msg)
+
+		// No message yet — generate one on-demand.
+		p, err := d.DB.GetProfile(r.Context(), userID)
+		if err != nil || p == nil {
+			// No profile yet: return a friendly default without hitting Claude.
+			respond(w, 200, map[string]any{
+				"id":             "default",
+				"message":        "Welcome to Stride! Complete your profile to get a personalised plan and daily coaching.",
+				"tip":            "Start by logging your first meal — even a small step builds momentum.",
+				"priority_meal":  "breakfast",
+				"tone":           "encouraging",
+			})
+			return
+		}
+
+		dbYesterday, _ := d.DB.GetYesterdayStats(r.Context(), userID)
+		ys := ai.YesterdayStats{CalorieTarget: p.CalorieTarget}
+		if dbYesterday != nil {
+			ys.CaloriesEaten      = dbYesterday.CaloriesEaten
+			ys.CurrentStreakDays  = dbYesterday.CurrentStreakDays
+			ys.TotalLostKg        = dbYesterday.TotalLostKg
+		}
+
+		aiMsg, err := d.aiClient().GenerateDailyCoach(r.Context(), dbProfileToAI(p), ys)
+		if err != nil {
+			log.Printf("[coach] GenerateDailyCoach userID=%s: %v", userID, err)
+			// Return a safe fallback so the UI never shows an error state.
+			respond(w, 200, map[string]any{
+				"id":             "fallback",
+				"message":        "Every day is a fresh start. Stay consistent and the results will follow!",
+				"tip":            "Drink a glass of water before each meal to help manage portion sizes.",
+				"priority_meal":  "breakfast",
+				"tone":           "encouraging",
+			})
+			return
+		}
+
+		dbMsg := &db.CoachMessage{
+			UserID:       userID,
+			Message:      aiMsg.Message,
+			Tip:          aiMsg.Tip,
+			PriorityMeal: aiMsg.PriorityMeal,
+			Tone:         aiMsg.Tone,
+		}
+		if saveErr := d.DB.SaveCoachMessage(r.Context(), dbMsg); saveErr != nil {
+			log.Printf("[coach] SaveCoachMessage userID=%s: %v", userID, saveErr)
+		}
+
+		respond(w, 200, aiMsg)
 	}
 }
 
@@ -721,4 +772,92 @@ func currentWeekLabel() string {
 func weekStart() time.Time {
 	now := time.Now()
 	return now.AddDate(0, 0, -int(now.Weekday()-time.Monday))
+}
+
+// ── Food lookup ───────────────────────────────────────────────────────────────
+
+// GET /api/food/barcode/{barcode}
+// Fetches nutrition data from Open Food Facts.
+func FoodBarcodeLookup(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		barcode := chi.URLParam(r, "barcode")
+		if barcode == "" {
+			respondErr(w, 400, "barcode required")
+			return
+		}
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		url := fmt.Sprintf("https://world.openfoodfacts.org/api/v0/product/%s.json", barcode)
+		resp, err := client.Get(url)
+		if err != nil {
+			log.Printf("[barcode] lookup %s: %v", barcode, err)
+			respondErr(w, 502, "barcode lookup failed")
+			return
+		}
+		defer resp.Body.Close()
+
+		var offResp struct {
+			Status  int `json:"status"`
+			Product struct {
+				ProductName string `json:"product_name"`
+				Nutriments  struct {
+					EnergyKcal100g float64 `json:"energy-kcal_100g"`
+					Proteins100g   float64 `json:"proteins_100g"`
+					Carbs100g      float64 `json:"carbohydrates_100g"`
+					Fat100g        float64 `json:"fat_100g"`
+				} `json:"nutriments"`
+				ServingSize     string  `json:"serving_size"`
+				ServingQuantity float64 `json:"serving_quantity"`
+			} `json:"product"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&offResp); err != nil || offResp.Status == 0 || offResp.Product.ProductName == "" {
+			respondErr(w, 404, "product not found")
+			return
+		}
+
+		p := offResp.Product
+		qty := p.ServingQuantity
+		if qty <= 0 {
+			qty = 100
+		}
+		ratio := qty / 100.0
+
+		serving := p.ServingSize
+		if serving == "" {
+			serving = fmt.Sprintf("%.0fg", qty)
+		}
+
+		respond(w, 200, ai.FoodNutrition{
+			Name:        p.ProductName,
+			Calories:    int(p.Nutriments.EnergyKcal100g * ratio),
+			ProteinG:    p.Nutriments.Proteins100g * ratio,
+			CarbsG:      p.Nutriments.Carbs100g * ratio,
+			FatG:        p.Nutriments.Fat100g * ratio,
+			ServingSize: serving,
+		})
+	}
+}
+
+// POST /api/food/analyze-photo
+// Sends a base64 image to Claude vision and returns estimated nutrition.
+func FoodAnalyzePhoto(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			ImageBase64 string `json:"image_base64"`
+		}
+		if err := decode(r, &body); err != nil || body.ImageBase64 == "" {
+			respondErr(w, 400, "image_base64 required")
+			return
+		}
+
+		nutrition, err := d.aiClient().AnalyzeFoodPhoto(r.Context(), body.ImageBase64)
+		if err != nil {
+			log.Printf("[food] analyze photo: %v", err)
+			respondErr(w, 502, "photo analysis failed")
+			return
+		}
+
+		respond(w, 200, nutrition)
+	}
 }
