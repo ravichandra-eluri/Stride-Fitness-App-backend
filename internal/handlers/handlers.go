@@ -709,6 +709,23 @@ func DeleteFoodEntry(d Deps) http.HandlerFunc {
 			respondErr(w, 500, "delete failed")
 			return
 		}
+		// Recompute daily log totals after deletion — mirrors what LogFood does on add.
+		if dailyLog, _ := d.DB.GetTodayLog(r.Context(), userID); dailyLog != nil {
+			entries, _ := d.DB.GetTodayFoodEntries(r.Context(), userID)
+			var totalCal int
+			var totalP, totalC, totalF float64
+			for _, e := range entries {
+				totalCal += e.Calories
+				totalP += e.ProteinG
+				totalC += e.CarbsG
+				totalF += e.FatG
+			}
+			dailyLog.CaloriesEaten = totalCal
+			dailyLog.ProteinG = totalP
+			dailyLog.CarbsG = totalC
+			dailyLog.FatG = totalF
+			d.DB.UpsertDailyLog(r.Context(), dailyLog)
+		}
 		respond(w, 200, map[string]string{"status": "deleted"})
 	}
 }
