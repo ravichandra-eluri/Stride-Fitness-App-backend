@@ -168,13 +168,20 @@ func (db *DB) SaveMealSwap(ctx context.Context, s *MealSwap) error {
 
 // ── Daily log queries ────────────────────────────────────────────────────────
 
-func (db *DB) GetTodayLog(ctx context.Context, userID string) (*DailyLog, error) {
+func (db *DB) GetTodayLog(ctx context.Context, userID string, localDate string) (*DailyLog, error) {
+	dateExpr := "CURRENT_DATE"
+	var args []any
+	args = append(args, userID)
+	if localDate != "" {
+		dateExpr = "$2"
+		args = append(args, localDate)
+	}
 	q := `SELECT id, user_id, log_date, calories_eaten, protein_g, carbs_g, fat_g,
 			     weight_kg, on_plan, streak_day, notes
 		  FROM daily_logs
-		  WHERE user_id = $1 AND log_date = CURRENT_DATE`
+		  WHERE user_id = $1 AND log_date = ` + dateExpr
 	l := &DailyLog{}
-	err := db.QueryRowContext(ctx, q, userID).Scan(
+	err := db.QueryRowContext(ctx, q, args...).Scan(
 		&l.ID, &l.UserID, &l.LogDate, &l.CaloriesEaten,
 		&l.ProteinG, &l.CarbsG, &l.FatG,
 		&l.WeightKg, &l.OnPlan, &l.StreakDay, &l.Notes,
@@ -185,9 +192,15 @@ func (db *DB) GetTodayLog(ctx context.Context, userID string) (*DailyLog, error)
 	return l, err
 }
 
-func (db *DB) UpsertDailyLog(ctx context.Context, l *DailyLog) error {
+func (db *DB) UpsertDailyLog(ctx context.Context, l *DailyLog, localDate string) error {
+	dateExpr := "CURRENT_DATE"
+	args := []any{l.UserID, l.CaloriesEaten, l.ProteinG, l.CarbsG, l.FatG, l.OnPlan, l.StreakDay}
+	if localDate != "" {
+		dateExpr = "$8"
+		args = append(args, localDate)
+	}
 	q := `INSERT INTO daily_logs (user_id, log_date, calories_eaten, protein_g, carbs_g, fat_g, on_plan, streak_day)
-		  VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, $7)
+		  VALUES ($1, ` + dateExpr + `, $2, $3, $4, $5, $6, $7)
 		  ON CONFLICT (user_id, log_date) DO UPDATE SET
 			calories_eaten = EXCLUDED.calories_eaten,
 			protein_g      = EXCLUDED.protein_g,
@@ -196,31 +209,37 @@ func (db *DB) UpsertDailyLog(ctx context.Context, l *DailyLog) error {
 			on_plan        = EXCLUDED.on_plan,
 			updated_at     = NOW()
 		  RETURNING id`
-	return db.QueryRowContext(ctx, q,
-		l.UserID, l.CaloriesEaten, l.ProteinG, l.CarbsG, l.FatG,
-		l.OnPlan, l.StreakDay,
-	).Scan(&l.ID)
+	return db.QueryRowContext(ctx, q, args...).Scan(&l.ID)
 }
 
-func (db *DB) AddFoodEntry(ctx context.Context, e *FoodEntry) error {
+func (db *DB) AddFoodEntry(ctx context.Context, e *FoodEntry, localDate string) error {
+	dateExpr := "CURRENT_DATE"
+	args := []any{e.UserID, e.DailyLogID, e.MealType, e.FoodName, e.Calories, e.ProteinG, e.CarbsG, e.FatG, e.ServingSize, e.LogMethod, e.Barcode}
+	if localDate != "" {
+		dateExpr = "$12"
+		args = append(args, localDate)
+	}
 	q := `INSERT INTO food_entries
 			(user_id, daily_log_id, log_date, meal_type, food_name, calories,
 			 protein_g, carbs_g, fat_g, serving_size, log_method, barcode)
-		  VALUES ($1,$2,CURRENT_DATE,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+		  VALUES ($1,$2,` + dateExpr + `,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		  RETURNING id`
-	return db.QueryRowContext(ctx, q,
-		e.UserID, e.DailyLogID, e.MealType, e.FoodName, e.Calories,
-		e.ProteinG, e.CarbsG, e.FatG, e.ServingSize, e.LogMethod, e.Barcode,
-	).Scan(&e.ID)
+	return db.QueryRowContext(ctx, q, args...).Scan(&e.ID)
 }
 
-func (db *DB) GetTodayFoodEntries(ctx context.Context, userID string) ([]*FoodEntry, error) {
+func (db *DB) GetTodayFoodEntries(ctx context.Context, userID string, localDate string) ([]*FoodEntry, error) {
+	dateExpr := "CURRENT_DATE"
+	args := []any{userID}
+	if localDate != "" {
+		dateExpr = "$2"
+		args = append(args, localDate)
+	}
 	q := `SELECT id, meal_type, food_name, calories, protein_g, carbs_g, fat_g,
 			     serving_size, log_method, logged_at
 		  FROM food_entries
-		  WHERE user_id = $1 AND log_date = CURRENT_DATE
+		  WHERE user_id = $1 AND log_date = ` + dateExpr + `
 		  ORDER BY logged_at ASC`
-	rows, err := db.QueryContext(ctx, q, userID)
+	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

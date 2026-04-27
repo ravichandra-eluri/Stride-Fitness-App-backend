@@ -10,10 +10,13 @@ import (
 
 type contextKey string
 
-const UserIDKey contextKey = "userID"
+const (
+	UserIDKey    contextKey = "userID"
+	LocalDateKey contextKey = "localDate"
+)
 
 // RequireAuth validates the JWT in the Authorization header.
-// On success it injects the userID into the request context.
+// On success it injects the userID and local date into the request context.
 func RequireAuth(jwtSecret []byte) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +51,13 @@ func RequireAuth(jwtSecret []byte) func(http.Handler) http.Handler {
 			}
 
 			ctx := context.WithValue(r.Context(), UserIDKey, userID)
+
+			// Client sends its local date so CURRENT_DATE queries use the user's
+			// timezone instead of the server's UTC date.
+			if localDate := r.Header.Get("X-Local-Date"); localDate != "" {
+				ctx = context.WithValue(ctx, LocalDateKey, localDate)
+			}
+
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -56,6 +66,13 @@ func RequireAuth(jwtSecret []byte) func(http.Handler) http.Handler {
 // UserIDFromCtx extracts the userID set by RequireAuth.
 func UserIDFromCtx(ctx context.Context) string {
 	v, _ := ctx.Value(UserIDKey).(string)
+	return v
+}
+
+// LocalDateFromCtx extracts the user's local date (YYYY-MM-DD) set by RequireAuth.
+// Falls back to empty string if not present; callers should default to CURRENT_DATE.
+func LocalDateFromCtx(ctx context.Context) string {
+	v, _ := ctx.Value(LocalDateKey).(string)
 	return v
 }
 
@@ -82,7 +99,7 @@ func CORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Local-Date")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

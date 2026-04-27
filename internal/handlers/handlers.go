@@ -298,6 +298,18 @@ func OnboardingComplete(d Deps) http.HandlerFunc {
 			return
 		}
 
+		// Compute goal date from the user's local date + timeline, so it's always
+		// accurate regardless of what the AI returned.
+		localDate := middleware.LocalDateFromCtx(r.Context())
+		goalDate := plan.GoalDate
+		baseDate := time.Now()
+		if localDate != "" {
+			if t, err := time.Parse("2006-01-02", localDate); err == nil {
+				baseDate = t
+			}
+		}
+		goalDate = baseDate.AddDate(0, body.TimelineMonths, 0).Format("2006-01-02")
+
 		// Save profile
 		dbProfile := &db.Profile{
 			UserID:          userID,
@@ -316,7 +328,7 @@ func OnboardingComplete(d Deps) http.HandlerFunc {
 			ProteinTargetG:  int(math.Round(plan.ProteinTargetG)),
 			CarbsTargetG:    int(math.Round(plan.CarbsTargetG)),
 			FatTargetG:      int(math.Round(plan.FatTargetG)),
-			GoalDate:        plan.GoalDate,
+			GoalDate:        goalDate,
 		}
 		if err := d.DB.UpsertProfile(r.Context(), dbProfile); err != nil {
 			log.Printf("[onboarding] UpsertProfile userID=%s: %v", userID, err)
@@ -330,7 +342,7 @@ func OnboardingComplete(d Deps) http.HandlerFunc {
 			"carbs_target":    int(math.Round(plan.CarbsTargetG)),
 			"fat_target":      int(math.Round(plan.FatTargetG)),
 			"weekly_loss_kg":  plan.WeeklyLossKg,
-			"goal_date":       plan.GoalDate,
+			"goal_date":       goalDate,
 			"coach_message":   plan.CoachMessage,
 			"plan_summary":    plan.PlanSummary,
 		})
@@ -491,23 +503,24 @@ func LogFood(d Deps) http.HandlerFunc {
 			return
 		}
 		entry.UserID = userID
+		localDate := middleware.LocalDateFromCtx(r.Context())
 
 		// Ensure today's daily_log exists
-		log, _ := d.DB.GetTodayLog(r.Context(), userID)
+		log, _ := d.DB.GetTodayLog(r.Context(), userID, localDate)
 		if log == nil {
 			log = &db.DailyLog{UserID: userID}
-			d.DB.UpsertDailyLog(r.Context(), log)
-			log, _ = d.DB.GetTodayLog(r.Context(), userID)
+			d.DB.UpsertDailyLog(r.Context(), log, localDate)
+			log, _ = d.DB.GetTodayLog(r.Context(), userID, localDate)
 		}
 		entry.DailyLogID = log.ID
 
-		if err := d.DB.AddFoodEntry(r.Context(), &entry); err != nil {
+		if err := d.DB.AddFoodEntry(r.Context(), &entry, localDate); err != nil {
 			respondErr(w, 500, "log failed")
 			return
 		}
 
 		// Recompute daily totals
-		entries, _ := d.DB.GetTodayFoodEntries(r.Context(), userID)
+		entries, _ := d.DB.GetTodayFoodEntries(r.Context(), userID, localDate)
 		var totalCal int
 		var totalP, totalC, totalF float64
 		for _, e := range entries {
@@ -520,7 +533,7 @@ func LogFood(d Deps) http.HandlerFunc {
 		log.ProteinG = totalP
 		log.CarbsG = totalC
 		log.FatG = totalF
-		d.DB.UpsertDailyLog(r.Context(), log)
+		d.DB.UpsertDailyLog(r.Context(), log, localDate)
 
 		respond(w, 201, map[string]any{
 			"entry_id":       entry.ID,
@@ -535,8 +548,9 @@ func LogFood(d Deps) http.HandlerFunc {
 func GetTodayLog(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())
-		log, _ := d.DB.GetTodayLog(r.Context(), userID)
-		entries, _ := d.DB.GetTodayFoodEntries(r.Context(), userID)
+		localDate := middleware.LocalDateFromCtx(r.Context())
+		log, _ := d.DB.GetTodayLog(r.Context(), userID, localDate)
+		entries, _ := d.DB.GetTodayFoodEntries(r.Context(), userID, localDate)
 		respond(w, 200, map[string]any{
 			"log":     log,
 			"entries": entries,
@@ -710,8 +724,9 @@ func DeleteFoodEntry(d Deps) http.HandlerFunc {
 			return
 		}
 		// Recompute daily log totals after deletion — mirrors what LogFood does on add.
-		if dailyLog, _ := d.DB.GetTodayLog(r.Context(), userID); dailyLog != nil {
-			entries, _ := d.DB.GetTodayFoodEntries(r.Context(), userID)
+		localDate := middleware.LocalDateFromCtx(r.Context())
+		if dailyLog, _ := d.DB.GetTodayLog(r.Context(), userID, localDate); dailyLog != nil {
+			entries, _ := d.DB.GetTodayFoodEntries(r.Context(), userID, localDate)
 			var totalCal int
 			var totalP, totalC, totalF float64
 			for _, e := range entries {
@@ -724,7 +739,7 @@ func DeleteFoodEntry(d Deps) http.HandlerFunc {
 			dailyLog.ProteinG = totalP
 			dailyLog.CarbsG = totalC
 			dailyLog.FatG = totalF
-			d.DB.UpsertDailyLog(r.Context(), dailyLog)
+			d.DB.UpsertDailyLog(r.Context(), dailyLog, localDate)
 		}
 		respond(w, 200, map[string]string{"status": "deleted"})
 	}
