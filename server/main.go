@@ -77,9 +77,10 @@ func main() {
 		r.Patch("/api/profile",  handlers.UpdateProfile(deps))
 
 		// Meal plans
-		r.Get("/api/meals/plan",         handlers.GetMealPlan(deps))
-		r.Post("/api/meals/regenerate",  handlers.RegenerateMealPlan(deps))
-		r.Post("/api/meals/swap",        handlers.SwapMeal(deps))
+		r.Get("/api/meals/plan",          handlers.GetMealPlan(deps))
+		r.Post("/api/meals/regenerate",   handlers.RegenerateMealPlan(deps))
+		r.Post("/api/meals/swap",         handlers.SwapMeal(deps))
+		r.Get("/api/meals/grocery-list",  handlers.GroceryList(deps))
 
 		// Food logging
 		r.Post("/api/log/food",              handlers.LogFood(deps))
@@ -94,9 +95,10 @@ func main() {
 		// Coach
 		r.Get("/api/coach/today",       handlers.TodayCoachMessage(deps))
 
-		// Food lookup (barcode + photo AI)
+		// Food lookup (barcode + photo AI + name AI)
 		r.Get("/api/food/barcode/{barcode}", handlers.FoodBarcodeLookup(deps))
 		r.Post("/api/food/analyze-photo",    handlers.FoodAnalyzePhoto(deps))
+		r.Post("/api/food/analyze-name",     handlers.FoodAnalyzeName(deps))
 
 		// Account management
 		r.Delete("/api/account",            handlers.DeleteAccount(deps))

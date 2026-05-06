@@ -184,6 +184,38 @@ func (c *Client) AnalyzeFoodPhoto(ctx context.Context, imageBase64 string) (*Foo
 	return &nutrition, nil
 }
 
+// ── EstimateFoodByName ───────────────────────────────────────────────────────
+//
+// Cheap text-only Claude call that estimates per-serving nutrition for an
+// arbitrary food name. Used as a fallback when Open Food Facts returns
+// nothing — OFF is a packaged-goods database and doesn't cover home-cooked
+// or ethnic dishes ("chicken biryani", "khichdi", "pho", etc).
+
+func (c *Client) EstimateFoodByName(ctx context.Context, name string) (*FoodNutrition, error) {
+	prompt := fmt.Sprintf(`Estimate the nutritional content of a typical single serving of "%s".
+
+Rules:
+- Pick a realistic, commonly-eaten serving size (e.g. "1 plate", "1 cup", "1 medium", "100g"). Avoid 100g unless that's actually how this food is served.
+- Use mainstream nutritional reference values; assume a typical home-cooked or restaurant preparation.
+- If the input is too vague to nutritionally estimate (e.g. just "food"), still produce a best-effort guess — don't refuse.
+
+Respond with ONLY valid JSON (no markdown, no explanation):
+{"name":"<canonical food name>","calories":<integer>,"protein_g":<float>,"carbs_g":<float>,"fat_g":<float>,"serving_size":"<e.g. 1 plate>"}`,
+		name,
+	)
+
+	text, err := c.ask(ctx, prompt, 256)
+	if err != nil {
+		return nil, err
+	}
+
+	var nutrition FoodNutrition
+	if err := json.Unmarshal([]byte(extractJSON(text)), &nutrition); err != nil {
+		return nil, fmt.Errorf("parse estimated food nutrition: %w", err)
+	}
+	return &nutrition, nil
+}
+
 // ── GenerateOnboardingPlan ────────────────────────────────────────────────────
 
 func (c *Client) GenerateOnboardingPlan(ctx context.Context, p UserProfile) (*OnboardingPlan, error) {
@@ -351,4 +383,55 @@ Respond with ONLY valid JSON (no markdown):
 		return nil, fmt.Errorf("parse coach message: %w", err)
 	}
 	return &msg, nil
+}
+
+// ── GenerateGroceryList ──────────────────────────────────────────────────────
+//
+// Synthesises a categorised, deduplicated grocery list from a week's meal
+// plan. We pass meal names + macros (the only data we have today) and let
+// Claude infer plausible ingredients and shopping quantities for one week.
+
+func (c *Client) GenerateGroceryList(ctx context.Context, plan *WeeklyMealPlan) (*GroceryList, error) {
+	// Compact the meal plan into a short text block — names only, no macros.
+	// Ingredients aren't stored on meals today, so Claude infers them from name.
+	var sb strings.Builder
+	for _, day := range plan.Days {
+		sb.WriteString(day.DayName)
+		sb.WriteString(": ")
+		for i, m := range day.Meals {
+			if i > 0 {
+				sb.WriteString("; ")
+			}
+			sb.WriteString(m.MealType)
+			sb.WriteString("=")
+			sb.WriteString(m.Name)
+		}
+		sb.WriteString("\n")
+	}
+
+	prompt := fmt.Sprintf(`You are a meal-prep assistant. Build a deduplicated weekly grocery list from this 7-day meal plan.
+
+Plan:
+%s
+Rules:
+- Aggregate ingredients across all meals — one entry per ingredient with a sensible weekly quantity (e.g. "3", "500 g", "1 bunch", "200 ml").
+- Group items into these categories in this order: Produce, Proteins, Grains & Bakery, Dairy & Eggs, Pantry & Spices, Other. Skip empty categories.
+- Be realistic: assume 1 person eating these meals for the week.
+- Don't include water, salt, or pepper.
+
+Respond with ONLY valid JSON (no markdown, no explanation):
+{"categories":[{"name":"<category>","items":[{"name":"<item>","quantity":"<qty>"}]}]}`,
+		sb.String(),
+	)
+
+	text, err := c.ask(ctx, prompt, 2048)
+	if err != nil {
+		return nil, err
+	}
+
+	var list GroceryList
+	if err := json.Unmarshal([]byte(extractJSON(text)), &list); err != nil {
+		return nil, fmt.Errorf("parse grocery list: %w", err)
+	}
+	return &list, nil
 }

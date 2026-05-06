@@ -453,6 +453,82 @@ func RegenerateMealPlan(d Deps) http.HandlerFunc {
 	}
 }
 
+// GroceryList returns a categorised, deduplicated grocery list synthesised
+// from the user's active weekly meal plan. Cached per meal_plan_id so we
+// only call Claude once per generated plan; pass ?force=true to regenerate.
+func GroceryList(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := middleware.UserIDFromCtx(r.Context())
+		force := r.URL.Query().Get("force") == "true"
+
+		plan, err := d.DB.GetActiveMealPlan(r.Context(), userID)
+		if err != nil {
+			respondErr(w, 500, "db error")
+			return
+		}
+		if plan == nil {
+			respondErr(w, 404, "no meal plan found")
+			return
+		}
+
+		respondList := func(categoriesJSON []byte) {
+			cats := json.RawMessage(categoriesJSON)
+			if len(cats) == 0 {
+				cats = json.RawMessage("[]")
+			}
+			respond(w, 200, struct {
+				MealPlanID string          `json:"meal_plan_id"`
+				Week       string          `json:"week"`
+				Categories json.RawMessage `json:"categories"`
+			}{plan.ID, plan.WeekLabel, cats})
+		}
+
+		if !force {
+			cached, err := d.DB.GetGroceryListForMealPlan(r.Context(), plan.ID)
+			if err != nil {
+				respondErr(w, 500, "db error")
+				return
+			}
+			if cached != nil {
+				respondList(cached.CategoriesJSON)
+				return
+			}
+		}
+
+		// Need the meal plan as a typed struct to feed Claude.
+		var days []ai.Day
+		if err := json.Unmarshal(plan.DaysJSON, &days); err != nil {
+			log.Printf("[grocery] unmarshal days userID=%s: %v", userID, err)
+			respondErr(w, 500, "bad meal plan data")
+			return
+		}
+		weekly := &ai.WeeklyMealPlan{
+			Week:             plan.WeekLabel,
+			Days:             days,
+			AvgDailyCalories: plan.AvgDailyCalories,
+		}
+
+		list, err := d.aiClient().GenerateGroceryList(r.Context(), weekly)
+		if err != nil {
+			log.Printf("[grocery] GenerateGroceryList userID=%s: %v", userID, err)
+			respondErr(w, 502, "ai error")
+			return
+		}
+
+		categoriesJSON, _ := json.Marshal(list.Categories)
+		dbList := &db.GroceryList{
+			UserID:         userID,
+			MealPlanID:     plan.ID,
+			CategoriesJSON: categoriesJSON,
+		}
+		if err := d.DB.SaveGroceryList(r.Context(), dbList); err != nil {
+			log.Printf("[grocery] SaveGroceryList userID=%s: %v", userID, err)
+			// Non-fatal — still return the generated list to the client.
+		}
+		respondList(categoriesJSON)
+	}
+}
+
 func SwapMeal(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())
@@ -873,6 +949,34 @@ func FoodBarcodeLookup(d Deps) http.HandlerFunc {
 			FatG:        p.Nutriments.Fat100g * ratio,
 			ServingSize: serving,
 		})
+	}
+}
+
+// POST /api/food/analyze-name
+// Estimates nutrition for a free-text food name via Claude. Used as a
+// fallback when Open Food Facts has no match (cooked / ethnic dishes).
+func FoodAnalyzeName(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Name string `json:"name"`
+		}
+		if err := decode(r, &body); err != nil {
+			respondErr(w, 400, "name required")
+			return
+		}
+		name := body.Name
+		if len(name) < 2 || len(name) > 120 {
+			respondErr(w, 400, "name must be 2-120 chars")
+			return
+		}
+
+		nutrition, err := d.aiClient().EstimateFoodByName(r.Context(), name)
+		if err != nil {
+			log.Printf("[food] analyze name=%q: %v", name, err)
+			respondErr(w, 502, "estimation failed")
+			return
+		}
+		respond(w, 200, nutrition)
 	}
 }
 
