@@ -605,16 +605,21 @@ func WeightHistory(d Deps) http.HandlerFunc {
 func TodayCoachMessage(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())
+		force := r.URL.Query().Get("force") == "true"
 
-		// Return cached message if one already exists for today.
-		msg, err := d.DB.GetTodayCoachMessage(r.Context(), userID)
-		if err != nil {
-			respondErr(w, 500, "db error")
-			return
-		}
-		if msg != nil {
-			respond(w, 200, msg)
-			return
+		// Return cached message unless caller explicitly asked for a fresh one.
+		// Client-side throttling keeps `force=true` requests sparse so we don't
+		// burn Claude calls on every app open.
+		if !force {
+			msg, err := d.DB.GetTodayCoachMessage(r.Context(), userID)
+			if err != nil {
+				respondErr(w, 500, "db error")
+				return
+			}
+			if msg != nil {
+				respond(w, 200, msg)
+				return
+			}
 		}
 
 		// No message yet — generate one on-demand.
