@@ -55,6 +55,21 @@ CREATE TABLE IF NOT EXISTS meal_plans (
 CREATE INDEX IF NOT EXISTS meal_plans_user_active
     ON meal_plans(user_id, is_active, week_start_date DESC);
 
+-- ── Grocery lists ─────────────────────────────────────────────────────────────
+-- One grocery list per meal plan. Cached so we don't re-call Claude on every
+-- view; regenerates when the meal plan is regenerated (new meal_plan_id).
+
+CREATE TABLE IF NOT EXISTS grocery_lists (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    meal_plan_id    UUID NOT NULL REFERENCES meal_plans(id) ON DELETE CASCADE UNIQUE,
+    categories      JSONB NOT NULL DEFAULT '[]',
+    generated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS grocery_lists_meal_plan
+    ON grocery_lists(meal_plan_id);
+
 -- ── Meal swaps ────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS meal_swaps (

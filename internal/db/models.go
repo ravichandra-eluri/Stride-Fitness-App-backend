@@ -92,6 +92,14 @@ type WeightEntry struct {
 	LoggedAt time.Time `json:"logged_at"`
 }
 
+type GroceryList struct {
+	ID             string    `json:"id"`
+	UserID         string    `json:"user_id"`
+	MealPlanID     string    `json:"meal_plan_id"`
+	CategoriesJSON []byte    `json:"-"` // marshalled separately by handler
+	GeneratedAt    time.Time `json:"generated_at"`
+}
+
 type CoachMessage struct {
 	ID           string       `json:"id"`
 	UserID       string       `json:"user_id"`

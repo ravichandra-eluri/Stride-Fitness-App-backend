@@ -155,6 +155,34 @@ func (db *DB) SaveMealPlan(ctx context.Context, m *MealPlan) error {
 	).Scan(&m.ID, &m.GeneratedAt)
 }
 
+// ── Grocery list queries ─────────────────────────────────────────────────────
+
+func (db *DB) GetGroceryListForMealPlan(ctx context.Context, mealPlanID string) (*GroceryList, error) {
+	q := `SELECT id, user_id, meal_plan_id, categories, generated_at
+		  FROM grocery_lists
+		  WHERE meal_plan_id = $1`
+	g := &GroceryList{}
+	err := db.QueryRowContext(ctx, q, mealPlanID).Scan(
+		&g.ID, &g.UserID, &g.MealPlanID, &g.CategoriesJSON, &g.GeneratedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return g, err
+}
+
+func (db *DB) SaveGroceryList(ctx context.Context, g *GroceryList) error {
+	q := `INSERT INTO grocery_lists (user_id, meal_plan_id, categories)
+		  VALUES ($1, $2, $3)
+		  ON CONFLICT (meal_plan_id) DO UPDATE SET
+			categories = EXCLUDED.categories,
+			generated_at = NOW()
+		  RETURNING id, generated_at`
+	return db.QueryRowContext(ctx, q,
+		g.UserID, g.MealPlanID, g.CategoriesJSON,
+	).Scan(&g.ID, &g.GeneratedAt)
+}
+
 func (db *DB) SaveMealSwap(ctx context.Context, s *MealSwap) error {
 	q := `INSERT INTO meal_swaps
 			(user_id, meal_plan_id, day, meal_type, original_meal, swapped_to_meal, filter_used)
@@ -436,7 +464,7 @@ func (db *DB) DeleteFoodEntry(ctx context.Context, userID, entryID string) error
 func (db *DB) DeleteUser(ctx context.Context, userID string) error {
 	tables := []string{
 		"food_entries", "daily_logs", "weight_logs",
-		"coach_messages", "meal_swaps", "meal_plans",
+		"coach_messages", "meal_swaps", "grocery_lists", "meal_plans",
 		"device_tokens", "subscriptions", "user_profiles",
 	}
 	for _, tbl := range tables {

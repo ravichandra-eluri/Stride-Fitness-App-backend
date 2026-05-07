@@ -83,6 +83,24 @@ type CoachMessage struct {
 	Tone         string `json:"tone"`
 }
 
+// GroceryItem is a single line in a grocery list, e.g. "Bananas — 6".
+type GroceryItem struct {
+	Name     string `json:"name"`
+	Quantity string `json:"quantity"`
+}
+
+// GroceryCategory groups grocery items by aisle, e.g. "Produce".
+type GroceryCategory struct {
+	Name  string        `json:"name"`
+	Items []GroceryItem `json:"items"`
+}
+
+// GroceryList is the result of GenerateGroceryList — one categorized,
+// deduplicated shopping list synthesized from the week's meal plan.
+type GroceryList struct {
+	Categories []GroceryCategory `json:"categories"`
+}
+
 // YesterdayStats holds the previous day's metrics used for coach messages.
 type YesterdayStats struct {
 	CaloriesEaten     int
