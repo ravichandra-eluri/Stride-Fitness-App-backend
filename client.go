@@ -473,3 +473,34 @@ Respond with ONLY valid JSON (no markdown, no explanation):
 	}
 	return &list, nil
 }
+
+// ── GenerateMealRecipe ───────────────────────────────────────────────────────
+//
+// Quick recipe (ingredients + brief steps) for a single meal name. Used by
+// the meal plan card "tap to view recipe" sheet.
+
+func (c *Client) GenerateMealRecipe(ctx context.Context, name string) (*MealRecipe, error) {
+	prompt := fmt.Sprintf(`Write a simple home-cooking recipe for "%s".
+
+Rules:
+- Keep ingredients to 6-12 items, with quantities (e.g. "1 cup oats", "2 tbsp olive oil").
+- Keep steps to 4-7 short imperative sentences. No filler.
+- Servings: assume 1 person.
+- Realistic prep_minutes (total time including cooking).
+
+Respond with ONLY valid JSON (no markdown):
+{"name":"<canonical name>","servings":1,"prep_minutes":<int>,"ingredients":["..."],"steps":["..."]}`,
+		name,
+	)
+
+	text, err := c.ask(ctx, prompt, 1024)
+	if err != nil {
+		return nil, err
+	}
+
+	var r MealRecipe
+	if err := json.Unmarshal([]byte(extractJSON(text)), &r); err != nil {
+		return nil, fmt.Errorf("parse meal recipe: %w", err)
+	}
+	return &r, nil
+}

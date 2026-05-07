@@ -95,10 +95,20 @@ type GroceryCategory struct {
 	Items []GroceryItem `json:"items"`
 }
 
-// GroceryList is the result of GenerateGroceryList — one categorized,
+// GroceryList is the result of GenerateGroceryList, one categorized,
 // deduplicated shopping list synthesized from the week's meal plan.
 type GroceryList struct {
 	Categories []GroceryCategory `json:"categories"`
+}
+
+// MealRecipe is the result of GenerateMealRecipe: ingredients + quick steps
+// for a single meal name. Stored client-side, not persisted server-side.
+type MealRecipe struct {
+	Name         string   `json:"name"`
+	Servings     int      `json:"servings"`
+	PrepMinutes  int      `json:"prep_minutes"`
+	Ingredients  []string `json:"ingredients"`
+	Steps        []string `json:"steps"`
 }
 
 // YesterdayStats holds the previous day's metrics used for coach messages.

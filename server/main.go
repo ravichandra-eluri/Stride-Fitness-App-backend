@@ -81,6 +81,7 @@ func main() {
 		r.Post("/api/meals/regenerate",   handlers.RegenerateMealPlan(deps))
 		r.Post("/api/meals/swap",         handlers.SwapMeal(deps))
 		r.Get("/api/meals/grocery-list",  handlers.GroceryList(deps))
+		r.Post("/api/meals/recipe",       handlers.MealRecipe(deps))
 
 		// Food logging
 		r.Post("/api/log/food",              handlers.LogFood(deps))
