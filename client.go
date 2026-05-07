@@ -226,6 +226,8 @@ Height: %d cm, Current weight: %.1f kg, Goal weight: %.1f kg
 Timeline: %d months, Activity level: %s, Daily workout minutes: %d
 Diet preferences: %s
 
+%s
+
 Respond with ONLY valid JSON matching this structure (no markdown, no explanation):
 {
   "calorie_target": <integer daily calories>,
@@ -235,12 +237,13 @@ Respond with ONLY valid JSON matching this structure (no markdown, no explanatio
   "weekly_loss_kg": <float expected weekly weight loss>,
   "goal_date": <"YYYY-MM-DD" estimated goal date>,
   "coach_message": <short motivational message, warm and direct, addressed to the user>,
-  "plan_summary": <2-3 sentences written directly to the user in a warm coach voice, e.g. "Your plan is..." or "We're going to..." — conversational, no jargon, no third-person>
+  "plan_summary": <2-3 sentences written directly to the user in a warm coach voice, e.g. "Your plan is..." or "We're going to..."  conversational, no jargon, no third-person>
 }`,
 		p.Name, p.Age, p.Gender,
 		p.HeightCm, p.CurrentWeightKg, p.GoalWeightKg,
 		p.TimelineMonths, p.ActivityLevel, p.DailyMinutes,
 		strings.Join(p.DietPrefs, ", "),
+		humanToneRules,
 	)
 
 	text, err := c.ask(ctx, prompt, 512)
@@ -252,7 +255,37 @@ Respond with ONLY valid JSON matching this structure (no markdown, no explanatio
 	if err := json.Unmarshal([]byte(extractJSON(text)), &plan); err != nil {
 		return nil, fmt.Errorf("parse onboarding plan: %w", err)
 	}
+	plan.CoachMessage = sanitizeHumanText(plan.CoachMessage)
+	plan.PlanSummary  = sanitizeHumanText(plan.PlanSummary)
 	return &plan, nil
+}
+
+// Style rules appended to user-facing coach prompts. Em-dashes and AI-typical
+// punctuation patterns are flagged by users as feeling "AI-written".
+const humanToneRules = `Style rules (important):
+- Do NOT use em-dashes (—), en-dashes (–), or " -- ". Use commas or short sentences instead.
+- Avoid the AI-typical "X — Y" / "X, but Y, however Z" cadence.
+- Write like a human friend, not a chatbot.`
+
+// Belt-and-suspenders: even with the prompt rule, Claude sometimes slips an
+// em-dash through. Strip them in post-processing.
+func sanitizeHumanText(s string) string {
+	r := strings.NewReplacer(
+		" — ", ", ",
+		"— ",  ", ",
+		" —",  ",",
+		"—",   ", ",
+		" – ", ", ",
+		"–",   ", ",
+		" -- ", ", ",
+		"--",  ", ",
+	)
+	out := r.Replace(s)
+	// Collapse any accidental ", ," from chained replacements.
+	for strings.Contains(out, ", ,") {
+		out = strings.ReplaceAll(out, ", ,", ",")
+	}
+	return strings.TrimSpace(out)
 }
 
 // ── GenerateWeeklyMealPlan ────────────────────────────────────────────────────
@@ -358,19 +391,22 @@ func (c *Client) GenerateDailyCoach(ctx context.Context, p UserProfile, yesterda
 
 	prompt := fmt.Sprintf(`You are a supportive fitness coach. Write a short daily motivational message.
 
-User: %s, goal: %.1f → %.1f kg
+User: %s, goal: %.1f to %.1f kg
 Yesterday: %d kcal eaten (target %d, %s), streak: %d days, total lost: %.1f kg
+
+%s
 
 Respond with ONLY valid JSON (no markdown):
 {
   "message": "<2-3 sentence motivational message personalised to their progress>",
   "tip": "<one practical nutrition or fitness tip for today>",
-  "priority_meal": "<breakfast|lunch|dinner|snack — the meal to focus on today>",
+  "priority_meal": "<breakfast|lunch|dinner|snack, the meal to focus on today>",
   "tone": "<encouraging|celebratory|gentle|motivating>"
 }`,
 		p.Name, p.CurrentWeightKg, p.GoalWeightKg,
 		yesterday.CaloriesEaten, yesterday.CalorieTarget, adherence,
 		yesterday.CurrentStreakDays, yesterday.TotalLostKg,
+		humanToneRules,
 	)
 
 	text, err := c.ask(ctx, prompt, 512)
@@ -382,6 +418,8 @@ Respond with ONLY valid JSON (no markdown):
 	if err := json.Unmarshal([]byte(extractJSON(text)), &msg); err != nil {
 		return nil, fmt.Errorf("parse coach message: %w", err)
 	}
+	msg.Message = sanitizeHumanText(msg.Message)
+	msg.Tip     = sanitizeHumanText(msg.Tip)
 	return &msg, nil
 }
 
