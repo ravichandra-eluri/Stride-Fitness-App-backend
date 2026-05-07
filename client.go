@@ -236,8 +236,8 @@ Respond with ONLY valid JSON matching this structure (no markdown, no explanatio
   "fat_target_g": <float daily fat grams>,
   "weekly_loss_kg": <float expected weekly weight loss>,
   "goal_date": <"YYYY-MM-DD" estimated goal date>,
-  "coach_message": <short motivational message, warm and direct, addressed to the user>,
-  "plan_summary": <2-3 sentences written directly to the user in a warm coach voice, e.g. "Your plan is..." or "We're going to..."  conversational, no jargon, no third-person>
+  "coach_message": <short motivational message, 1-2 sentences max, warm and direct, addressed to the user>,
+  "plan_summary": <ONE short sentence (≤25 words) like a text from a friend, e.g. "Stick to 1750 cals a day with high-protein meals and you'll be down 8 kg in 3 months." No fluff, no "we're going to", no buzzwords like "real progress" or "every single week".>
 }`,
 		p.Name, p.Age, p.Gender,
 		p.HeightCm, p.CurrentWeightKg, p.GoalWeightKg,
