@@ -657,6 +657,26 @@ func GetTodayLog(d Deps) http.HandlerFunc {
 	}
 }
 
+// GetLogByDate returns the daily log + entries for an arbitrary YYYY-MM-DD,
+// used by the dashboard week strip when the user taps a past day.
+func GetLogByDate(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := middleware.UserIDFromCtx(r.Context())
+		date := chi.URLParam(r, "date")
+		// Validate date format to keep callers honest and prevent SQL surprises.
+		if _, err := time.Parse("2006-01-02", date); err != nil {
+			respondErr(w, 400, "date must be YYYY-MM-DD")
+			return
+		}
+		log, _ := d.DB.GetTodayLog(r.Context(), userID, date)
+		entries, _ := d.DB.GetTodayFoodEntries(r.Context(), userID, date)
+		respond(w, 200, map[string]any{
+			"log":     log,
+			"entries": entries,
+		})
+	}
+}
+
 func LogWeight(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())
