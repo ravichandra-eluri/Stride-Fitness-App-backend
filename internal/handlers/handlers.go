@@ -596,13 +596,29 @@ func LogFood(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())
 
-		var entry db.FoodEntry
-		if err := decode(r, &entry); err != nil {
+		// FoodEntry doesn't have a `log_date` JSON field today, so accept it
+		// as an extra body key. Lets the iOS app log to a non-current date
+		// (e.g. last night's dinner being logged the morning after).
+		var raw struct {
+			db.FoodEntry
+			LogDate string `json:"log_date"`
+		}
+		if err := decode(r, &raw); err != nil {
 			respondErr(w, 400, "invalid body")
 			return
 		}
+		entry := raw.FoodEntry
 		entry.UserID = userID
+
 		localDate := middleware.LocalDateFromCtx(r.Context())
+		// Validate and apply explicit override if the client sent one.
+		if raw.LogDate != "" {
+			if _, err := time.Parse("2006-01-02", raw.LogDate); err != nil {
+				respondErr(w, 400, "log_date must be YYYY-MM-DD")
+				return
+			}
+			localDate = raw.LogDate
+		}
 
 		// Ensure today's daily_log exists
 		log, _ := d.DB.GetTodayLog(r.Context(), userID, localDate)
@@ -834,6 +850,39 @@ func AppleSubscriptionWebhook(d Deps) http.HandlerFunc {
 // ── Food entry deletion ───────────────────────────────────────────────────────
 
 // DELETE /api/log/food/{id}
+// UpdateFoodEntry currently supports correcting meal_type (e.g. user
+// mis-tagged a lunch as breakfast). Calories and macros are not editable
+// here — those are immutable per the source nutrition data; users delete and
+// re-add if they want a different number.
+func UpdateFoodEntry(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := middleware.UserIDFromCtx(r.Context())
+		entryID := chi.URLParam(r, "id")
+		if entryID == "" {
+			respondErr(w, 400, "missing entry id")
+			return
+		}
+		var body struct {
+			MealType string `json:"meal_type"`
+		}
+		if err := decode(r, &body); err != nil {
+			respondErr(w, 400, "invalid body")
+			return
+		}
+		valid := map[string]bool{"breakfast": true, "lunch": true, "snack": true, "dinner": true}
+		if !valid[body.MealType] {
+			respondErr(w, 400, "meal_type must be breakfast|lunch|snack|dinner")
+			return
+		}
+		if err := d.DB.UpdateFoodEntryMealType(r.Context(), userID, entryID, body.MealType); err != nil {
+			log.Printf("[food] UpdateFoodEntry userID=%s entryID=%s: %v", userID, entryID, err)
+			respondErr(w, 500, "update failed")
+			return
+		}
+		respond(w, 200, map[string]string{"status": "updated", "meal_type": body.MealType})
+	}
+}
+
 func DeleteFoodEntry(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromCtx(r.Context())

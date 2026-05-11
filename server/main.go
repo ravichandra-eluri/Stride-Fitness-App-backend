@@ -88,6 +88,7 @@ func main() {
 		r.Get("/api/log/today",              handlers.GetTodayLog(deps))
 		r.Get("/api/log/date/{date}",        handlers.GetLogByDate(deps))
 		r.Delete("/api/log/food/{id}",       handlers.DeleteFoodEntry(deps))
+		r.Patch("/api/log/food/{id}",        handlers.UpdateFoodEntry(deps))
 		r.Post("/api/log/weight",            handlers.LogWeight(deps))
 
 		// Progress

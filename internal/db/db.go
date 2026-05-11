@@ -459,6 +459,25 @@ func (db *DB) DeleteFoodEntry(ctx context.Context, userID, entryID string) error
 	return err
 }
 
+// UpdateFoodEntryMealType updates only the meal_type of an entry. Used by the
+// dashboard's meal-detail sheet when the user fixes a misclassified meal.
+// Returns the entry's log_date so the caller can recompute that day's totals
+// (although since calories/macros don't change, totals stay the same).
+func (db *DB) UpdateFoodEntryMealType(ctx context.Context, userID, entryID, mealType string) error {
+	res, err := db.ExecContext(ctx,
+		`UPDATE food_entries SET meal_type = $1 WHERE id = $2 AND user_id = $3`,
+		mealType, entryID, userID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // DeleteUser hard-deletes all data for a user (cascades to child tables that
 // have ON DELETE CASCADE, and explicitly removes the rest).
 func (db *DB) DeleteUser(ctx context.Context, userID string) error {
